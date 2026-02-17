@@ -1,0 +1,207 @@
+<!-- index.html -->
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#0b0d10" />
+  <title>BWK-Aufgabenplanung</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+
+<body>
+  <header class="topbar">
+    <button class="icon-btn" id="btnToggleSidebar" aria-label="Seitenleiste öffnen/schließen">☰</button>
+
+    <div class="brand">
+      <div class="brand-title">BWK-Aufgabenplanung</div>
+      <div class="brand-sub">einfach, mobil, exportierbar</div>
+    </div>
+
+    <div class="top-actions">
+      <input class="search" id="searchInput" type="search" placeholder="Suchen…" inputmode="search" aria-label="Aufgaben durchsuchen" />
+      <button class="btn" id="btnAddTask">+ Aufgabe</button>
+
+      <button class="icon-btn" id="btnSaveNow" aria-label="Jetzt lokal speichern" title="Jetzt lokal speichern">💾</button>
+      <button class="icon-btn" id="btnExport" aria-label="Backup exportieren" title="Backup exportieren">⬇️</button>
+
+      <input id="importFile" type="file" accept="application/json" hidden />
+      <button class="icon-btn" id="btnImport" aria-label="Backup importieren" title="Backup importieren">⬆️</button>
+    </div>
+  </header>
+
+  <div class="shell">
+    <aside class="sidebar" id="sidebar">
+      <div class="sidebar-head">
+        <div class="sidebar-title">Personen / Gruppen</div>
+        <button class="icon-btn" id="btnAddPerson" aria-label="Person hinzufügen" title="Person hinzufügen">＋</button>
+      </div>
+
+      <div class="person-list" id="personList"></div>
+
+      <div class="sidebar-foot">
+        <div class="tiny" id="saveInfo">—</div>
+      </div>
+    </aside>
+
+    <main class="content">
+      <section class="grid">
+        <div class="card calendar-card">
+          <div class="card-head">
+            <div class="card-title">Kalender</div>
+            <div class="calendar-nav">
+              <button class="icon-btn" id="btnPrevMonth" aria-label="Vorheriger Monat">◀</button>
+              <div class="calendar-month" id="calendarMonthLabel">—</div>
+              <button class="icon-btn" id="btnNextMonth" aria-label="Nächster Monat">▶</button>
+            </div>
+          </div>
+
+          <div class="weekday-row" id="weekdayRow"></div>
+          <div class="calendar-grid" id="calendarGrid"></div>
+
+          <div class="calendar-foot">
+            <div class="tiny" id="selectedDayLabel">—</div>
+          </div>
+        </div>
+
+        <div class="card lists-card">
+          <div class="card-head">
+            <div class="card-title">Aufgaben</div>
+            <div class="chip" id="activePersonChip">—</div>
+          </div>
+
+          <div class="section">
+            <div class="section-title">Für den ausgewählten Tag</div>
+            <div id="dayTasks" class="task-list"></div>
+          </div>
+
+          <details class="section" open>
+            <summary class="section-title">In Arbeit <span class="count" id="countInProgress">0</span></summary>
+            <div id="listInProgress" class="task-list"></div>
+          </details>
+
+          <details class="section" open>
+            <summary class="section-title">Geplant <span class="count" id="countPlanned">0</span></summary>
+            <div id="listPlanned" class="task-list"></div>
+          </details>
+
+          <details class="section">
+            <summary class="section-title">Backlog (ohne Datum) <span class="count" id="countBacklog">0</span></summary>
+            <div id="listBacklog" class="task-list"></div>
+          </details>
+
+          <details class="section">
+            <summary class="section-title">Erledigt <span class="count" id="countDone">0</span></summary>
+            <div id="listDone" class="task-list"></div>
+          </details>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <!-- Person Modal -->
+  <dialog class="modal" id="personDialog">
+    <form method="dialog" class="modal-box" id="personForm">
+      <div class="modal-title" id="personDialogTitle">Person hinzufügen</div>
+
+      <label class="field">
+        <span>Name</span>
+        <input id="personName" type="text" required minlength="1" maxlength="40" placeholder="z. B. Nico, Team AVöD, …" />
+      </label>
+
+      <div class="modal-actions">
+        <button class="btn ghost" value="cancel">Abbrechen</button>
+        <button class="btn" id="personSubmit" value="ok">Speichern</button>
+      </div>
+
+      <input type="hidden" id="personEditId" />
+    </form>
+  </dialog>
+
+  <!-- Task Modal -->
+  <dialog class="modal" id="taskDialog">
+    <form method="dialog" class="modal-box" id="taskForm">
+      <div class="modal-title" id="taskDialogTitle">Aufgabe hinzufügen</div>
+
+      <label class="field">
+        <span>Aufgabenname</span>
+        <input id="taskTitle" type="text" required minlength="1" maxlength="80" placeholder="z. B. Zugangsdaten anfordern, Termin planen, …" />
+      </label>
+
+      <div class="row">
+        <label class="field">
+          <span>Priorität (Gewichtung)</span>
+          <select id="taskPriority">
+            <option value="0">Keine</option>
+            <option value="1">● Niedrig</option>
+            <option value="2">●● Mittel</option>
+            <option value="3">●●● Hoch</option>
+          </select>
+        </label>
+
+        <label class="field">
+          <span>Wiederholung</span>
+          <select id="taskRepeat">
+            <option value="none">Keine</option>
+            <option value="daily">Täglich</option>
+            <option value="weekly">Wöchentlich</option>
+            <option value="monthly">Monatlich</option>
+          </select>
+        </label>
+      </div>
+
+      <label class="field inline">
+        <input id="taskIsBacklog" type="checkbox" />
+        <span>Ohne Datum (Backlog)</span>
+      </label>
+
+      <div class="row" id="dateRow">
+        <label class="field">
+          <span>Start</span>
+          <input id="taskStart" type="date" />
+        </label>
+        <label class="field">
+          <span>Ende</span>
+          <input id="taskEnd" type="date" />
+        </label>
+      </div>
+
+      <label class="field">
+        <span>Notiz (optional)</span>
+        <textarea id="taskNote" rows="3" maxlength="500" placeholder="kurz & hilfreich…"></textarea>
+      </label>
+
+      <div class="hint" id="taskHint"></div>
+
+      <div class="modal-actions">
+        <button class="btn ghost" value="cancel">Abbrechen</button>
+        <button class="btn danger" id="taskDeleteBtn" value="delete" type="button">Löschen</button>
+        <button class="btn" id="taskSubmit" value="ok">Speichern</button>
+      </div>
+
+      <input type="hidden" id="taskEditId" />
+    </form>
+  </dialog>
+
+  <!-- Import Modal -->
+  <dialog class="modal" id="importDialog">
+    <div class="modal-box">
+      <div class="modal-title">Import</div>
+      <div class="hint">
+        Du kannst die importierten Daten entweder <b>ersetzen</b> (empfohlen nach Cookie-Löschung),
+        oder <b>zusammenführen</b> (merge).
+      </div>
+
+      <div class="modal-actions">
+        <button class="btn ghost" id="importCancel">Abbrechen</button>
+        <button class="btn" id="importMerge">Zusammenführen</button>
+        <button class="btn danger" id="importReplace">Ersetzen</button>
+      </div>
+    </div>
+  </dialog>
+
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+  <script src="script.js"></script>
+</body>
+</html>
