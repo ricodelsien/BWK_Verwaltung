@@ -1,5 +1,7 @@
 /* style.css */
 :root{
+  color-scheme: dark light;
+
   --bg: #0b0d10;
   --panel: #11161d;
   --card: #0f141b;
@@ -24,11 +26,34 @@
 html, body { height: 100%; }
 body{
   margin: 0;
+  color-scheme: dark;
   background: radial-gradient(1200px 700px at 10% 0%, #162035 0%, var(--bg) 55%) fixed;
   color: var(--text);
   font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
+}
+
+@media (prefers-color-scheme: light){
+  :root{
+    --bg: #f4f7ff;
+    --panel: #ffffff;
+    --card: #ffffff;
+    --text: #101319;
+    --muted: rgba(16,19,25,.68);
+    --soft: rgba(16,19,25,.12);
+    --soft2: rgba(16,19,25,.08);
+
+    --p0: rgba(16,19,25,.18);
+    --p1: rgba(20, 120, 220, .85);
+    --p2: rgba(220, 140, 40, .9);
+    --p3: rgba(210, 60, 60, .9);
+  }
+
+  body{
+    color-scheme: light;
+    background: radial-gradient(1200px 700px at 10% 0%, #dfe7ff 0%, var(--bg) 55%) fixed;
+  }
 }
 
 button, input, select, textarea{
@@ -80,6 +105,10 @@ button, input, select, textarea{
 .shell{
   display: flex;
   min-height: calc(100vh - 70px);
+}
+
+body.sidebar-collapsed .sidebar{
+  display: none;
 }
 
 .sidebar{
@@ -256,15 +285,29 @@ button, input, select, textarea{
   border-top: 1px solid var(--soft2);
 }
 
+.section-hint{
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.45;
+}
+
 .section-title{
   font-weight: 750;
   opacity: .92;
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-start;
   gap: 8px;
   cursor: pointer;
 }
+
+.section-title .count{ margin-left: auto; }
+
+details > summary.section-title{ list-style: none; }
+details > summary.section-title::-webkit-details-marker{ display: none; }
+details > summary.section-title::after{ content: "▾"; opacity: .7; margin-left: 8px; }
+details[open] > summary.section-title::after{ content: "▴"; }
 
 .count{
   font-size: 12px;
@@ -295,6 +338,10 @@ button, input, select, textarea{
 .task.prio-1{ border-left: 5px solid var(--p1); }
 .task.prio-2{ border-left: 5px solid var(--p2); }
 .task.prio-3{ border-left: 5px solid var(--p3); }
+
+.task.prio-1{ background: linear-gradient(90deg, rgba(140,200,255,.10), rgba(255,255,255,.03)); }
+.task.prio-2{ background: linear-gradient(90deg, rgba(255,200,120,.10), rgba(255,255,255,.03)); }
+.task.prio-3{ background: linear-gradient(90deg, rgba(255,120,120,.12), rgba(255,255,255,.03)); }
 
 .task-main{ flex: 1; min-width: 0; }
 .task-title{
@@ -407,8 +454,43 @@ button, input, select, textarea{
 }
 .field.inline input{ width: 18px; height: 18px; }
 
+.assignees{
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 2px;
+}
+
+.assignee-item{
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--soft2);
+  background: rgba(255,255,255,.04);
+  cursor: pointer;
+  user-select: none;
+}
+
+.assignee-item input{
+  width: 18px;
+  height: 18px;
+}
+
+.assignee-item span{
+  font-size: 13px;
+  font-weight: 650;
+}
+
 .modal::backdrop{
   background: rgba(0,0,0,.55);
+}
+
+.modal{
+  border: none;
+  padding: 0;
+  background: transparent;
 }
 .modal-box{
   width: min(560px, calc(100vw - 24px));

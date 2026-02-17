@@ -41,6 +41,7 @@
 
       <div class="sidebar-foot">
         <div class="tiny" id="saveInfo">—</div>
+        <div class="tiny" id="appInfo">—</div>
       </div>
     </aside>
 
@@ -70,10 +71,10 @@
             <div class="chip" id="activePersonChip">—</div>
           </div>
 
-          <div class="section">
-            <div class="section-title">Für den ausgewählten Tag</div>
+          <details class="section" open>
+            <summary class="section-title">Für den ausgewählten Tag <span class="count" id="countDay">0</span></summary>
             <div id="dayTasks" class="task-list"></div>
-          </div>
+          </details>
 
           <details class="section" open>
             <summary class="section-title">In Arbeit <span class="count" id="countInProgress">0</span></summary>
@@ -87,6 +88,7 @@
 
           <details class="section">
             <summary class="section-title">Backlog (ohne Datum) <span class="count" id="countBacklog">0</span></summary>
+            <div class="section-hint">Backlog = ohne Datum. Öffne eine Aufgabe und ergänze Start/Ende, um sie einzuplanen.</div>
             <div id="listBacklog" class="task-list"></div>
           </details>
 
@@ -127,6 +129,12 @@
         <span>Aufgabenname</span>
         <input id="taskTitle" type="text" required minlength="1" maxlength="80" placeholder="z. B. Zugangsdaten anfordern, Termin planen, …" />
       </label>
+
+      <div class="field">
+        <span>Zuweisen an</span>
+        <div id="assigneeList" class="assignees"></div>
+        <div class="tiny">Mehrfachauswahl möglich.</div>
+      </div>
 
       <div class="row">
         <label class="field">
