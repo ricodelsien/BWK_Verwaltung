@@ -15,12 +15,18 @@
 
     <div class="brand">
       <div class="brand-title">BWK-Aufgabenplanung</div>
-      <div class="brand-sub">einfach, mobil, exportierbar</div>
-    </div>
+          </div>
 
     <div class="top-actions">
       <input class="search" id="searchInput" type="search" placeholder="Suchen…" inputmode="search" aria-label="Aufgaben durchsuchen" />
+      <button class="btn" id="btnToday" title="Heute auswählen">Heute</button>
       <button class="btn" id="btnAddTask">+ Aufgabe</button>
+
+      <button class="icon-btn" id="btnPrint" aria-label="Drucken" title="Drucken">🖨️</button>
+      <button class="icon-btn" id="btnExportOverview" aria-label="Übersicht exportieren" title="Übersicht (CSV) exportieren">🧾</button>
+      <button class="icon-btn" id="btnSettings" aria-label="Einstellungen" title="Einstellungen">⚙️</button>
+      <button class="icon-btn" id="btnHelp" aria-label="Hilfe" title="Hilfe">?</button>
+      <button class="icon-btn" id="btnReload" aria-label="App neu laden" title="App neu laden">⟳</button>
 
       <button class="icon-btn" id="btnSaveNow" aria-label="Jetzt lokal speichern" title="Jetzt lokal speichern">💾</button>
       <button class="icon-btn" id="btnExport" aria-label="Backup exportieren" title="Backup exportieren">⬇️</button>
@@ -63,6 +69,11 @@
           <div class="calendar-foot">
             <div class="tiny" id="selectedDayLabel">—</div>
           </div>
+
+          <details class="ferien" id="ferienDetails">
+            <summary class="tiny">Ferien (Berlin) <span class="muted" id="ferienSummary"></span></summary>
+            <div class="tiny" id="ferienBox">—</div>
+          </details>
         </div>
 
         <div class="card lists-card">
@@ -70,6 +81,29 @@
             <div class="card-title">Aufgaben</div>
             <div class="chip" id="activePersonChip">—</div>
           </div>
+
+      <div class="print-meta" id="printMeta"></div>
+
+      <details class="section" open>
+        <summary class="section-title">Planungs-Übersicht <span class="count" id="countOverview">0</span></summary>
+        <div class="section-hint">Mini-Statistik für die aktive Person (gefiltert durch Suche). Fokus: nächste 14 Tage + Status.</div>
+        <div class="analytics">
+          <div class="analytics-card">
+            <div class="analytics-title">Nächste 14 Tage</div>
+            <canvas id="chartWorkload" width="680" height="160" aria-label="Auslastung" role="img"></canvas>
+          </div>
+          <div class="analytics-card">
+            <div class="analytics-title">Status</div>
+            <div class="statusbar" id="statusBar" aria-label="Status-Verteilung"></div>
+            <div class="legend" id="statusLegend"></div>
+          </div>
+        </div>
+      </details>
+
+      <details class="section" open>
+        <summary class="section-title">Meilensteine (nächste 90 Tage) <span class="count" id="countMilestones">0</span></summary>
+        <div id="listMilestones" class="task-list"></div>
+      </details>
 
           <details class="section" open>
             <summary class="section-title">Für den ausgewählten Tag <span class="count" id="countDay">0</span></summary>
@@ -112,7 +146,7 @@
       </label>
 
       <div class="modal-actions">
-        <button class="btn ghost" value="cancel">Abbrechen</button>
+        <button class="btn ghost" id="personCancel" type="button">Abbrechen</button>
         <button class="btn" id="personSubmit" value="ok">Speichern</button>
       </div>
 
@@ -138,6 +172,15 @@
 
       <div class="row">
         <label class="field">
+          <span>Typ</span>
+          <select id="taskKind">
+            <option value="task">🧩 Aufgabe</option>
+            <option value="appointment">🕒 Termin</option>
+            <option value="milestone">🏁 Meilenstein</option>
+          </select>
+        </label>
+
+        <label class="field">
           <span>Priorität (Gewichtung)</span>
           <select id="taskPriority">
             <option value="0">Keine</option>
@@ -146,7 +189,9 @@
             <option value="3">●●● Hoch</option>
           </select>
         </label>
+      </div>
 
+      <div class="row">
         <label class="field">
           <span>Wiederholung</span>
           <select id="taskRepeat">
@@ -155,6 +200,11 @@
             <option value="weekly">Wöchentlich</option>
             <option value="monthly">Monatlich</option>
           </select>
+        </label>
+
+        <label class="field" id="timeHintField">
+          <span>Uhrzeit (nur Termin)</span>
+          <div class="tiny">Wenn du keinen Termin planst, ignorieren.</div>
         </label>
       </div>
 
@@ -174,6 +224,17 @@
         </label>
       </div>
 
+      <div class="row" id="timeRow">
+        <label class="field">
+          <span>Von</span>
+          <input id="taskTimeStart" type="time" />
+        </label>
+        <label class="field">
+          <span>Bis</span>
+          <input id="taskTimeEnd" type="time" />
+        </label>
+      </div>
+
       <label class="field">
         <span>Notiz (optional)</span>
         <textarea id="taskNote" rows="3" maxlength="500" placeholder="kurz & hilfreich…"></textarea>
@@ -182,7 +243,7 @@
       <div class="hint" id="taskHint"></div>
 
       <div class="modal-actions">
-        <button class="btn ghost" value="cancel">Abbrechen</button>
+        <button class="btn ghost" id="taskCancel" type="button">Abbrechen</button>
         <button class="btn danger" id="taskDeleteBtn" value="delete" type="button">Löschen</button>
         <button class="btn" id="taskSubmit" value="ok">Speichern</button>
       </div>
@@ -204,6 +265,67 @@
         <button class="btn ghost" id="importCancel">Abbrechen</button>
         <button class="btn" id="importMerge">Zusammenführen</button>
         <button class="btn danger" id="importReplace">Ersetzen</button>
+      </div>
+    </div>
+  </dialog>
+
+
+  <!-- Settings Modal -->
+  <dialog class="modal" id="settingsDialog">
+    <div class="modal-box">
+      <div class="modal-title">Einstellungen</div>
+      <div class="hint">Theme + Akzent (wie in der Stundenplan-App). Speichert lokal im Browser.</div>
+
+      <div class="form-grid">
+        <label class="field">
+          <span>Theme</span>
+          <select id="setTheme">
+            <option value="system">System</option>
+            <option value="dark">Dunkel</option>
+            <option value="light">Hell</option>
+          </select>
+        </label>
+
+        <label class="field">
+          <span>Akzent (gedeckt)</span>
+          <select id="setAccent">
+            <option value="blue">Blau</option>
+            <option value="green">Grün</option>
+            <option value="wine">Weinrot</option>
+            <option value="violet">Violett</option>
+            <option value="brown">Braun</option>
+            <option value="mustard">Senf</option>
+          </select>
+        </label>
+      </div>
+
+      <div class="modal-actions">
+        <button class="btn" id="settingsClose">Schließen</button>
+        <button class="btn primary" id="settingsSave">Speichern</button>
+      </div>
+    </div>
+  </dialog>
+
+  <!-- Help Modal -->
+  <dialog class="modal" id="helpDialog">
+    <div class="modal-box">
+      <div class="modal-title">Kurzanleitung</div>
+      <div class="hint">
+        <b>Kalender</b>: Klick = Tag auswählen. Doppelklick (oder Doppeltippen am Handy) = neue Aufgabe für diesen Tag.
+        <br><br>
+        <b>Aufgabe/Termin/Meilenstein</b>: Im Dialog kannst du den Typ wählen.
+        <ul class="help-list">
+          <li><b>Aufgabe</b>: klassisch (Start/Ende optional als Zeitraum).</li>
+          <li><b>Termin</b>: ein Tag, optional mit Uhrzeit.</li>
+          <li><b>Meilenstein</b>: ein Tag (z. B. Abgabe, Deadline).</li>
+        </ul>
+        <b>Backlog</b>: ohne Datum – ideal zum Sammeln. Später planen oder direkt starten.
+        <br><br>
+        <b>Speichern</b>: Standardmäßig lokal im Browser. Für Austausch im Team: JSON exportieren und importieren.
+      </div>
+
+      <div class="modal-actions">
+        <button class="btn" id="helpClose">OK</button>
       </div>
     </div>
   </dialog>

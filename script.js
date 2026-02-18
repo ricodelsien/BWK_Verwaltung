@@ -2,7 +2,7 @@
 (() => {
   const APP = {
     name: "BWK-Aufgabenplanung",
-    version: "0.2",
+    version: "0.4",
     buildDate: "2026-02-17",
     author: "Nico Siedler"
   };
@@ -29,6 +29,47 @@
   function clampStr(s) {
     return String(s ?? "").trim();
   }
+
+  // --- People sorting (by surname) ---
+  function personSortKey(name) {
+    const s = clampStr(name).toLowerCase();
+    if (!s) return "";
+    // "Nachname, Vorname"
+    if (s.includes(",")) {
+      const [last, first] = s.split(",").map(x => x.trim());
+      return `${last} ${first}`.trim();
+    }
+    const parts = s.split(/\s+/).filter(Boolean);
+    if (parts.length <= 1) return parts[0] || s;
+    const last = parts[parts.length - 1];
+    const first = parts.slice(0, -1).join(" ");
+    return `${last} ${first}`.trim();
+  }
+
+  function sortedPeople() {
+    return [...state.people].sort((a, b) => {
+      const ak = personSortKey(a.name);
+      const bk = personSortKey(b.name);
+      if (ak !== bk) return ak.localeCompare(bk, "de");
+      return (a.name || "").localeCompare(b.name || "", "de");
+    });
+  }
+
+  // --- Drag helpers ---
+  function getDraggedPersonId(dt) {
+    if (!dt) return "";
+    return dt.getData("text/person-id") || dt.getData("text/plain") || "";
+  }
+
+  // --- Berlin holiday / school holiday (Ferien) caches ---
+  const HOLI_CACHE_PREFIX = "bwk_holidays_DE-BE_";
+  const SCHOOL_CACHE_PREFIX = "bwk_schoolholidays_DE-BE_";
+  let holidayYearLoaded = null;
+  let berlinHolidays = {}; // { 'YYYY-MM-DD': 'Name' }
+  let schoolYearLoaded = null;
+  let berlinSchoolHolidays = []; // [{name,start,end}]
+  let holidayYearFetching = null;
+  let schoolYearFetching = null;
 
   function isoToday() {
     const d = new Date();
@@ -71,6 +112,160 @@
     return iso;
   }
 
+  function monthStartEndISO(year, monthIndex0) {
+    const mm = String(monthIndex0 + 1).padStart(2, "0");
+    const lastDay = new Date(year, monthIndex0 + 1, 0).getDate();
+    const sIso = `${year}-${mm}-01`;
+    const eIso = `${year}-${mm}-${String(lastDay).padStart(2, "0")}`;
+    return { sIso, eIso };
+  }
+
+  async function fetchBerlinPublicHolidays(year) {
+    // Try Nager.Date first (works well with CORS)
+    try {
+      const res = await fetch(`https://date.nager.at/api/v3/PublicHolidays/${year}/DE`, { cache: "no-cache" });
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      const arr = await res.json();
+      const map = {};
+      for (const h of Array.isArray(arr) ? arr : []) {
+        const appliesBerlin = !h.counties || (Array.isArray(h.counties) && h.counties.includes("DE-BE"));
+        if (!appliesBerlin) continue;
+        if (h.date) map[h.date] = h.localName || h.name || "Feiertag";
+      }
+      return map;
+    } catch {
+      // Fallback: feiertage-api.de
+      try {
+        const res2 = await fetch(`https://feiertage-api.de/api/?jahr=${year}&nur_land=BE`, { cache: "no-cache" });
+        if (!res2.ok) throw new Error("HTTP " + res2.status);
+        const obj = await res2.json();
+        const map = {};
+        for (const [name, info] of Object.entries(obj || {})) {
+          const date = info?.datum;
+          if (date) map[date] = name;
+        }
+        return map;
+      } catch {
+        return {};
+      }
+    }
+  }
+
+  async function ensureBerlinHolidays(year) {
+    if (holidayYearLoaded === year) return;
+    if (holidayYearFetching === year) return;
+
+    const cacheKey = HOLI_CACHE_PREFIX + String(year);
+    const cached = safeParse(localStorage.getItem(cacheKey) || "");
+    if (cached && typeof cached === "object") {
+      berlinHolidays = cached;
+      holidayYearLoaded = year;
+      return;
+    }
+
+    berlinHolidays = {};
+    holidayYearFetching = year;
+
+    const map = await fetchBerlinPublicHolidays(year);
+    berlinHolidays = map;
+    holidayYearLoaded = year;
+    holidayYearFetching = null;
+    try {
+      localStorage.setItem(cacheKey, JSON.stringify(map));
+    } catch {
+      // ignore
+    }
+  }
+
+  async function fetchBerlinSchoolHolidays(year) {
+    // Try Nager.Date first
+    try {
+      const res = await fetch(`https://date.nager.at/api/v3/SchoolHolidays/${year}/DE`, { cache: "no-cache" });
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      const arr = await res.json();
+      const out = [];
+      for (const h of Array.isArray(arr) ? arr : []) {
+        const appliesBerlin = !h.counties || (Array.isArray(h.counties) && h.counties.includes("DE-BE"));
+        if (!appliesBerlin) continue;
+        const start = h.startDate || h.start;
+        const end = h.endDate || h.end;
+        if (start && end) out.push({ name: h.localName || h.name || "Ferien", start, end });
+      }
+      return out;
+    } catch {
+      // Fallback: ferien-api.de
+      try {
+        const res2 = await fetch(`https://ferien-api.de/api/v1/holidays/BE/${year}`, { cache: "no-cache" });
+        if (!res2.ok) throw new Error("HTTP " + res2.status);
+        const arr2 = await res2.json();
+        const out2 = [];
+        for (const h of Array.isArray(arr2) ? arr2 : []) {
+          const start = h.start || h.startDate;
+          const end = h.end || h.endDate;
+          const name = h.name || h.holidayName || "Ferien";
+          if (start && end) out2.push({ name, start, end });
+        }
+        return out2;
+      } catch {
+        return [];
+      }
+    }
+  }
+
+  async function ensureBerlinSchoolHolidays(year) {
+    if (schoolYearLoaded === year) return;
+    if (schoolYearFetching === year) return;
+
+    const cacheKey = SCHOOL_CACHE_PREFIX + String(year);
+    const cached = safeParse(localStorage.getItem(cacheKey) || "");
+    if (Array.isArray(cached)) {
+      berlinSchoolHolidays = cached;
+      schoolYearLoaded = year;
+      return;
+    }
+
+    berlinSchoolHolidays = [];
+    schoolYearFetching = year;
+
+    const list = await fetchBerlinSchoolHolidays(year);
+    berlinSchoolHolidays = list;
+    schoolYearLoaded = year;
+    schoolYearFetching = null;
+    try {
+      localStorage.setItem(cacheKey, JSON.stringify(list));
+    } catch {
+      // ignore
+    }
+  }
+
+  function renderFerienBox(year, monthIndex0) {
+    const box = $("#ferienBox");
+    const sum = $("#ferienSummary");
+    if (!box || !sum) return;
+
+    const { sIso, eIso } = monthStartEndISO(year, monthIndex0);
+    const inMonth = (berlinSchoolHolidays || []).filter(r => !(r.end < sIso || r.start > eIso));
+
+    if (!inMonth.length) {
+      sum.textContent = "";
+      box.textContent = "Keine Daten in diesem Monat.";
+      return;
+    }
+
+    sum.textContent = `• ${inMonth.length}`;
+    box.innerHTML = "";
+    for (const r of inMonth.slice(0, 6)) {
+      const line = document.createElement("div");
+      line.textContent = `${r.name}: ${r.start} → ${r.end}`;
+      box.appendChild(line);
+    }
+    if (inMonth.length > 6) {
+      const more = document.createElement("div");
+      more.textContent = `… +${inMonth.length - 6} weitere`;
+      box.appendChild(more);
+    }
+  }
+
   function safeParse(json) {
     try {
       return JSON.parse(json);
@@ -90,7 +285,9 @@
         month: today.slice(0, 7),
         selectedDay: today,
         sidebarOpen: false,
-        sidebarCollapsed: false
+        sidebarCollapsed: false,
+        theme: "system",
+        accent: "blue"
       },
       lastSavedAt: null
     };
@@ -110,6 +307,19 @@
     t.priority = Number(t.priority ?? 0);
     t.repeat ??= "none";
 
+    // Type: task | appointment | milestone
+    t.kind ??= "task";
+    const okKind = new Set(["task", "appointment", "milestone"]);
+    if (!okKind.has(t.kind)) t.kind = "task";
+
+    // Optional time range (appointments only)
+    t.timeStart = clampStr(t.timeStart) || null;
+    t.timeEnd = clampStr(t.timeEnd) || null;
+    if (t.kind !== "appointment") {
+      t.timeStart = null;
+      t.timeEnd = null;
+    }
+
     t.isBacklog = !!t.isBacklog;
     if (t.isBacklog) {
       t.start = null;
@@ -118,6 +328,12 @@
     } else {
       t.start = t.start || isoToday();
       t.end = t.end || t.start;
+
+      // Appointments and milestones are single-day entries
+      if (t.kind === "appointment" || t.kind === "milestone") {
+        t.end = t.start;
+      }
+
       t.status ??= "planned";
     }
 
@@ -180,6 +396,8 @@
       if (parsed?.version === 2 && Array.isArray(parsed.people) && Array.isArray(parsed.tasks)) {
         const s = parsed;
         s.ui ??= defaultStateV2().ui;
+      s.ui.theme ??= "system";
+      s.ui.accent ??= "blue";
         s.people = s.people.map(p => normalizePerson(p));
         s.tasks = s.tasks.map(t => normalizeTask(t));
         s.lastSavedAt ??= null;
@@ -252,6 +470,11 @@
     const bKey = b.isBacklog ? "9999-12-31" : (b.end || b.start || "9999-12-31");
     if (aKey !== bKey) return aKey.localeCompare(bKey);
 
+    // On same day: appointments by time
+    const aTime = (a.kind === "appointment" ? (a.timeStart || "") : "");
+    const bTime = (b.kind === "appointment" ? (b.timeStart || "") : "");
+    if (aTime !== bTime) return aTime.localeCompare(bTime);
+
     return (a.title || "").localeCompare(b.title || "");
   }
 
@@ -312,6 +535,21 @@
     return `${t.start} → ${t.end}`;
   }
 
+  function taskKindText(t) {
+    if (t.kind === "appointment") return "Termin";
+    if (t.kind === "milestone") return "Meilenstein";
+    return "Aufgabe";
+  }
+
+  function taskTimeText(t) {
+    if (t.kind !== "appointment") return "";
+    const s = t.timeStart || "";
+    const e = t.timeEnd || "";
+    if (s && e) return `${s}–${e}`;
+    if (s) return `${s}`;
+    return "";
+  }
+
   function advanceRepeatingTask(t) {
     if (t.isBacklog || t.repeat === "none") return;
 
@@ -346,15 +584,18 @@
   }
 
   function ensureFirstRun() {
-    if (state.people.length === 0) {
-      openPersonDialog();
-      $("#btnToggleSidebar").disabled = true;
+    const hasPeople = state.people.length > 0;
+
+    // No forced prompt on first run. Instead: keep UI usable and guide when user acts.
+    $("#btnAddTask").disabled = !hasPeople;
+
+    if (!hasPeople) {
+      state.ui.activePersonId = null;
       return;
     }
 
-    $("#btnToggleSidebar").disabled = false;
     if (!state.ui.activePersonId || !activePerson()) {
-      state.ui.activePersonId = state.people[0].id;
+      state.ui.activePersonId = sortedPeople()[0]?.id ?? state.people[0].id;
     }
   }
 
@@ -366,12 +607,34 @@
 
     const q = $("#searchInput").value;
 
-    for (const p of state.people) {
+    const people = sortedPeople();
+
+    if (people.length === 0) {
+      const empty = document.createElement("div");
+      empty.className = "tiny";
+      empty.textContent = "Noch keine Personen. Mit '＋' hinzufügen.";
+      list.appendChild(empty);
+    }
+
+    for (const p of people) {
       const isActive = p.id === state.ui.activePersonId;
       const counts = countBuckets(p.id, q);
 
       const item = document.createElement("div");
       item.className = "person-item" + (isActive ? " active" : "");
+      item.draggable = true;
+
+      item.addEventListener("dragstart", (e) => {
+        try {
+          e.dataTransfer.setData("text/person-id", p.id);
+          e.dataTransfer.setData("text/plain", p.id);
+          e.dataTransfer.effectAllowed = "copy";
+        } catch {
+          // ignore
+        }
+        item.classList.add("dragging");
+      });
+      item.addEventListener("dragend", () => item.classList.remove("dragging"));
 
       const left = document.createElement("div");
       left.style.minWidth = "0";
@@ -478,19 +741,36 @@
       if (iso === today) cell.classList.add("today");
       if (iso === state.ui.selectedDay) cell.classList.add("selected");
 
+      const holName = berlinHolidays?.[iso];
+      if (holName) {
+        cell.classList.add("holiday");
+        cell.title = `Feiertag: ${holName}`;
+      }
+
       const num = document.createElement("div");
       num.className = "daynum";
       num.textContent = String(d.getDate());
       cell.appendChild(num);
 
+      if (holName) {
+        const hn = document.createElement("div");
+        hn.className = "holidayname";
+        hn.textContent = holName;
+        cell.appendChild(hn);
+      }
+
       if (ap) {
-        const c = tasksForDay(ap.id, iso, q).length;
+        const dayList = tasksForDay(ap.id, iso, q);
+        const c = dayList.length;
         if (c > 0) {
           const badge = document.createElement("div");
           badge.className = "badge";
           badge.textContent = c > 99 ? "99+" : String(c);
           cell.appendChild(badge);
         }
+
+        if (dayList.some(t => t.kind === "milestone")) cell.classList.add("has-milestone");
+        if (dayList.some(t => t.kind === "appointment")) cell.classList.add("has-appointment");
       }
 
       const pick = () => {
@@ -536,6 +816,29 @@
         openNewOnThisDay();
       });
 
+      // Drag & Drop: Person -> day (open planning for that person)
+      cell.addEventListener("dragover", (e) => {
+        const pid = getDraggedPersonId(e.dataTransfer);
+        if (!pid) return;
+        e.preventDefault();
+        cell.classList.add("dragover");
+      });
+      cell.addEventListener("dragleave", () => cell.classList.remove("dragover"));
+      cell.addEventListener("drop", (e) => {
+        const pid = getDraggedPersonId(e.dataTransfer);
+        if (!pid) return;
+        e.preventDefault();
+        cell.classList.remove("dragover");
+
+        state.ui.activePersonId = pid;
+        state.ui.selectedDay = iso;
+        state.ui.month = iso.slice(0, 7);
+        saveState();
+        renderAll();
+        openTaskDialog(null, { prefillDate: iso, prefillAssignees: [pid] });
+        closeSidebarOnMobile();
+      });
+
       cell.addEventListener("keydown", (e) => {
         if (e.key === "Enter" || e.key === " ") {
           e.preventDefault();
@@ -546,8 +849,11 @@
       grid.appendChild(cell);
     }
 
+    const selIso = state.ui.selectedDay;
+    const hol = berlinHolidays?.[selIso];
+    const holTxt = hol ? ` · Feiertag: ${hol}` : "";
     $("#selectedDayLabel").textContent =
-      `Ausgewählt: ${new Date(state.ui.selectedDay).toLocaleDateString("de-DE", { weekday: "long", year: "numeric", month: "long", day: "numeric" })}`;
+      `Ausgewählt: ${new Date(selIso).toLocaleDateString("de-DE", { weekday: "long", year: "numeric", month: "long", day: "numeric" })}${holTxt}`;
   }
 
   function renderLists() {
@@ -555,12 +861,37 @@
     const q = $("#searchInput").value;
 
     $("#dayTasks").innerHTML = "";
+    $("#listMilestones").innerHTML = "";
     $("#listInProgress").innerHTML = "";
     $("#listPlanned").innerHTML = "";
     $("#listBacklog").innerHTML = "";
     $("#listDone").innerHTML = "";
 
     if (!ap) return;
+
+    // Milestones overview (next 90 days)
+    const from = isoToday();
+    const to = addDaysISO(from, 90);
+    const ms = [];
+    for (const t of tasksForPerson(ap.id)) {
+      if (!filterMatch(t, q)) continue;
+      if (t.kind !== "milestone") continue;
+      if (t.status === "done") continue;
+      if (!t.start || t.isBacklog) continue;
+      if (t.start < from || t.start > to) continue;
+      ms.push(t);
+    }
+    ms.sort((a, b) => (a.start || "").localeCompare(b.start || "") || taskSort(a, b));
+    $("#countMilestones").textContent = ms.length;
+
+    if (ms.length === 0) {
+      const empty = document.createElement("div");
+      empty.className = "tiny";
+      empty.textContent = "Keine Meilensteine in den nächsten 90 Tagen.";
+      $("#listMilestones").appendChild(empty);
+    } else {
+      for (const t of ms) $("#listMilestones").appendChild(taskRow(t));
+    }
 
     const todays = tasksForDay(ap.id, state.ui.selectedDay, q);
     $("#countDay").textContent = todays.length;
@@ -633,7 +964,9 @@
 
     const p1 = document.createElement("span");
     p1.className = "pill";
-    p1.textContent = `📅 ${taskRangeText(t)}`;
+    const kIcon = (t.kind === "appointment") ? "🕒" : (t.kind === "milestone" ? "🏁" : "📅");
+    const time = taskTimeText(t);
+    p1.textContent = `${kIcon} ${taskRangeText(t)}${time ? " · " + time : ""}`;
 
     const p2 = document.createElement("span");
     p2.className = "pill";
@@ -647,10 +980,15 @@
     p4.className = "pill";
     p4.textContent = `🔖 ${statusText(t.status)}`;
 
+    const pK = document.createElement("span");
+    pK.className = "pill";
+    pK.textContent = `🏷 ${taskKindText(t)}`;
+
     sub.appendChild(p1);
     sub.appendChild(p2);
     sub.appendChild(p3);
     sub.appendChild(p4);
+    sub.appendChild(pK);
 
     if (t.assignees?.length > 1) {
       const pA = document.createElement("span");
@@ -745,6 +1083,30 @@
     edit.addEventListener("click", () => openTaskDialog(t));
     actions.appendChild(edit);
 
+    // Drag & Drop: add another assignee by dropping a person onto the task
+    wrap.addEventListener("dragover", (e) => {
+      const pid = getDraggedPersonId(e.dataTransfer);
+      if (!pid) return;
+      e.preventDefault();
+      wrap.classList.add("droptarget");
+    });
+    wrap.addEventListener("dragleave", () => wrap.classList.remove("droptarget"));
+    wrap.addEventListener("drop", (e) => {
+      const pid = getDraggedPersonId(e.dataTransfer);
+      if (!pid) return;
+      e.preventDefault();
+      wrap.classList.remove("droptarget");
+
+      t.assignees ??= [];
+      if (!t.assignees.includes(pid)) {
+        t.assignees.push(pid);
+        normalizeTask(t);
+        saveState();
+        renderAll();
+        toast(`${personNameById(pid)} hinzugefügt`);
+      }
+    });
+
     wrap.appendChild(main);
     wrap.appendChild(actions);
     return wrap;
@@ -756,7 +1118,29 @@
     renderWeekdays();
     renderCalendar();
     renderLists();
+    renderAnalytics();
+    updatePrintMeta();
     updateSaveInfo();
+
+    // Load holidays/ferien in the background (no blocking). When available, we re-render once.
+    const [yStr, mStr] = String(state.ui.month || isoToday().slice(0, 7)).split("-");
+    const y = Number(yStr);
+    const m0 = Math.max(0, Number(mStr) - 1);
+
+    if (y && holidayYearLoaded !== y && holidayYearFetching !== y) {
+      ensureBerlinHolidays(y).then(() => {
+        // Only re-render if we're still on the same year
+        if (String(state.ui.month || "").startsWith(String(y))) renderAll();
+      });
+    }
+
+    if (y && schoolYearLoaded !== y && schoolYearFetching !== y) {
+      ensureBerlinSchoolHolidays(y).then(() => {
+        if (String(state.ui.month || "").startsWith(String(y))) renderAll();
+      });
+    }
+
+    renderFerienBox(y, m0);
 
     // Desktop sidebar collapsed state
     document.body.classList.toggle("sidebar-collapsed", !!state.ui.sidebarCollapsed);
@@ -829,7 +1213,7 @@
     const box = $("#assigneeList");
     box.innerHTML = "";
 
-    for (const p of state.people) {
+    for (const p of sortedPeople()) {
       const label = document.createElement("label");
       label.className = "assignee-item";
 
@@ -859,6 +1243,7 @@
     const prefillDate = opts.prefillDate || state.ui.selectedDay || isoToday();
 
     $("#taskTitle").value = task?.title || "";
+    $("#taskKind").value = task?.kind || "task";
     $("#taskPriority").value = String(task?.priority ?? 0);
     $("#taskRepeat").value = task?.repeat ?? "none";
     $("#taskNote").value = task?.note || "";
@@ -873,14 +1258,18 @@
     $("#taskStart").value = start;
     $("#taskEnd").value = end;
 
+    $("#taskTimeStart").value = task?.timeStart || "";
+    $("#taskTimeEnd").value = task?.timeEnd || "";
+
     const selectedAssignees = isEdit
       ? (Array.isArray(task.assignees) ? task.assignees.slice() : [ap.id])
-      : [ap.id];
+      : (Array.isArray(opts.prefillAssignees) && opts.prefillAssignees.length ? opts.prefillAssignees.slice() : [ap.id]);
 
     renderAssigneePicker(selectedAssignees);
 
     $("#taskDeleteBtn").style.display = isEdit ? "" : "none";
 
+    syncKindInputs();
     syncDateInputs();
     updateTaskHint();
     safeShowModal(taskDialog);
@@ -900,7 +1289,33 @@
     const isBacklog = $("#taskIsBacklog").checked;
     $("#dateRow").style.opacity = isBacklog ? ".45" : "1";
     $("#taskStart").disabled = isBacklog;
-    $("#taskEnd").disabled = isBacklog;
+    $("#taskEnd").disabled = isBacklog || $("#taskKind").value !== "task";
+  }
+
+  function syncKindInputs() {
+    const kind = $("#taskKind").value;
+    const backlogCb = $("#taskIsBacklog");
+
+    // Appointments and milestones need a date
+    if (kind === "appointment" || kind === "milestone") {
+      backlogCb.checked = false;
+      backlogCb.disabled = true;
+      // Single day: keep end in sync and disabled
+      if ($("#taskStart").value) {
+        $("#taskEnd").value = $("#taskStart").value;
+      }
+    } else {
+      backlogCb.disabled = false;
+    }
+
+    const timeRow = $("#timeRow");
+    timeRow.classList.toggle("show", kind === "appointment");
+    if (kind !== "appointment") {
+      $("#taskTimeStart").value = "";
+      $("#taskTimeEnd").value = "";
+    }
+
+    syncDateInputs();
   }
 
   function updateTaskHint(msg = "") {
@@ -915,6 +1330,16 @@
 
     if (isBacklog) {
       el.textContent = "Backlog: ohne Datum. Idee: Sammeln, später planen (Datum ergänzen) oder direkt starten.";
+      return;
+    }
+
+    const kind = $("#taskKind").value;
+    if (kind === "appointment") {
+      el.textContent = `Termin: Datum wählen (nicht vor ${today}). Optional Uhrzeit. Ende muss ≥ Start sein.`;
+      return;
+    }
+    if (kind === "milestone") {
+      el.textContent = `Meilenstein: ein Datum (nicht vor ${today}). Ideal für Deadlines/Abgaben.`;
       return;
     }
 
@@ -933,6 +1358,7 @@
     const assignees = selectedAssigneesFromUI();
     if (assignees.length === 0) return { ok: false, msg: "Bitte mindestens eine Person auswählen." };
 
+    const kind = $("#taskKind").value;
     const isBacklog = $("#taskIsBacklog").checked;
     const repeat = $("#taskRepeat").value;
     const prio = Number($("#taskPriority").value);
@@ -940,12 +1366,12 @@
     if (isBacklog) {
       return {
         ok: true,
-        task: { title, assignees, isBacklog: true, start: null, end: null, repeat, priority: prio, note: $("#taskNote").value }
+        task: { title, kind: "task", assignees, isBacklog: true, start: null, end: null, timeStart: null, timeEnd: null, repeat, priority: prio, note: $("#taskNote").value }
       };
     }
 
     const start = $("#taskStart").value;
-    const end = $("#taskEnd").value || start;
+    const end = (kind === "task") ? ($("#taskEnd").value || start) : start;
 
     if (!start) return { ok: false, msg: "Bitte ein Startdatum setzen (oder Backlog aktivieren)." };
 
@@ -956,14 +1382,27 @@
 
     if (end < start) return { ok: false, msg: "Enddatum muss am selben Tag oder nach dem Start liegen." };
 
+    let timeStart = null;
+    let timeEnd = null;
+    if (kind === "appointment") {
+      timeStart = clampStr($("#taskTimeStart").value) || null;
+      timeEnd = clampStr($("#taskTimeEnd").value) || null;
+      if (timeStart && timeEnd && timeEnd < timeStart) {
+        return { ok: false, msg: "Uhrzeit: 'Bis' muss nach 'Von' liegen." };
+      }
+    }
+
     return {
       ok: true,
       task: {
         title,
+        kind,
         assignees,
         isBacklog: false,
         start,
         end,
+        timeStart,
+        timeEnd,
         repeat,
         priority: prio,
         note: $("#taskNote").value
@@ -978,15 +1417,21 @@
 
       // Edits: allow older dates
       t.title = clampStr(input.title);
+      t.kind = input.kind || "task";
       t.priority = Number(input.priority ?? 0);
       t.repeat = input.repeat ?? "none";
       t.note = clampStr(input.note);
       t.assignees = Array.isArray(input.assignees) ? input.assignees.slice() : [];
 
+      t.timeStart = input.timeStart || null;
+      t.timeEnd = input.timeEnd || null;
+
       t.isBacklog = !!input.isBacklog;
       if (t.isBacklog) {
         t.start = null;
         t.end = null;
+        t.timeStart = null;
+        t.timeEnd = null;
         if (t.status !== "done") t.status = "backlog";
       } else {
         t.start = input.start;
@@ -999,10 +1444,13 @@
       const t = normalizeTask({
         id: uid(),
         title: clampStr(input.title),
+        kind: input.kind || "task",
         assignees: input.assignees.slice(),
         isBacklog: !!input.isBacklog,
         start: input.isBacklog ? null : input.start,
         end: input.isBacklog ? null : (input.end || input.start),
+        timeStart: input.timeStart || null,
+        timeEnd: input.timeEnd || null,
         repeat: input.repeat ?? "none",
         priority: Number(input.priority ?? 0),
         note: clampStr(input.note),
@@ -1070,6 +1518,81 @@
     toast("Backup exportiert");
   }
 
+  function downloadText(text, filename, mime = "text/plain") {
+    const bom = (mime === "text/csv") ? "\ufeff" : "";
+    const blob = new Blob([bom, text], { type: `${mime};charset=utf-8` });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 250);
+  }
+
+  function csvEscape(v) {
+    const s = String(v ?? "");
+    if (/[\n\r",;]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
+    return s;
+  }
+
+  function fileSlug(s) {
+    return clampStr(s)
+      .toLowerCase()
+      .replace(/[^a-z0-9äöüß]+/gi, "_")
+      .replace(/^_+|_+$/g, "")
+      .slice(0, 60) || "person";
+  }
+
+  function exportOverviewCSV() {
+    const ap = activePerson();
+    if (!ap) {
+      toast("Keine Person ausgewählt");
+      return;
+    }
+
+    const q = $("#searchInput").value;
+    const tasks = tasksForPerson(ap.id).filter(t => filterMatch(t, q)).slice();
+    tasks.sort(taskSort);
+
+    const header = [
+      "Personen",
+      "Typ",
+      "Status",
+      "Priorität",
+      "Start",
+      "Ende",
+      "Uhrzeit_von",
+      "Uhrzeit_bis",
+      "Wiederholung",
+      "Titel",
+      "Notiz"
+    ];
+
+    const lines = [header.map(csvEscape).join(";")];
+    for (const t of tasks) {
+      const persons = (t.assignees || []).map(personNameById).join(", ");
+      lines.push([
+        persons,
+        taskKindText(t),
+        statusText(t.status),
+        priorityText(t.priority ?? 0),
+        t.start || "",
+        t.end || "",
+        t.timeStart || "",
+        t.timeEnd || "",
+        repeatText(t.repeat),
+        t.title || "",
+        t.note || ""
+      ].map(csvEscape).join(";"));
+    }
+
+    const date = isoToday();
+    downloadText(lines.join("\n"), `BWK-Aufgabenplanung_Uebersicht_${fileSlug(ap.name)}_${date}.csv`, "text/csv");
+    toast("Übersicht exportiert");
+  }
+
   const importDialog = $("#importDialog");
 
   function openImportChoice(imported) {
@@ -1082,6 +1605,8 @@
     if (obj.version === 2 && Array.isArray(obj.people) && Array.isArray(obj.tasks)) {
       const s = obj;
       s.ui ??= defaultStateV2().ui;
+      s.ui.theme ??= "system";
+      s.ui.accent ??= "blue";
       s.people = s.people.map(p => normalizePerson(p));
       s.tasks = s.tasks.map(t => normalizeTask(t));
       s.lastSavedAt ??= null;
@@ -1207,16 +1732,74 @@
     $("#btnToggleSidebar").disabled = (state.people.length === 0);
   });
 
-  $("#btnAddTask").addEventListener("click", () => openTaskDialog());
+  $("#personCancel").addEventListener("click", () => safeCloseModal(personDialog));
+
+  $("#btnAddTask").addEventListener("click", () => {
+    if (state.people.length === 0) {
+      toast("Bitte erst eine Person hinzufügen");
+      openPersonDialog();
+      return;
+    }
+    openTaskDialog();
+  });
+
+  $("#taskCancel").addEventListener("click", () => safeCloseModal(taskDialog));
+
+  $("#btnToday").addEventListener("click", () => {
+    const today = isoToday();
+    state.ui.selectedDay = today;
+    state.ui.month = today.slice(0, 7);
+    saveState();
+    renderAll();
+    toast("Heute ausgewählt");
+  });
+
+  $("#btnReload").addEventListener("click", () => location.reload());
+
+  const helpDialog = $("#helpDialog");
+  $("#btnHelp").addEventListener("click", () => safeShowModal(helpDialog));
+  const settingsDialog = $("#settingsDialog");
+  $("#btnSettings").addEventListener("click", () => {
+    $("#setTheme").value = state.ui.theme || "system";
+    $("#setAccent").value = state.ui.accent || "blue";
+    safeShowModal(settingsDialog);
+  });
+  $("#settingsClose").addEventListener("click", () => safeCloseModal(settingsDialog));
+  $("#settingsSave").addEventListener("click", () => {
+    state.ui.theme = $("#setTheme").value;
+    state.ui.accent = $("#setAccent").value;
+    applyUiTheme();
+    saveState();
+    safeCloseModal(settingsDialog);
+  });
+
+  $("#helpClose").addEventListener("click", () => safeCloseModal(helpDialog));
+
+  $("#btnPrint").addEventListener("click", () => window.print());
+
+  $("#btnExportOverview").addEventListener("click", () => exportOverviewCSV());
 
   $("#taskIsBacklog").addEventListener("change", () => {
+    // If backlog is enabled, force kind to task (appointments/milestones need a date)
+    if ($("#taskIsBacklog").checked) {
+      $("#taskKind").value = "task";
+      $("#taskTimeStart").value = "";
+      $("#taskTimeEnd").value = "";
+    }
+    syncKindInputs();
     syncDateInputs();
+    updateTaskHint();
+  });
+
+  $("#taskKind").addEventListener("change", () => {
+    syncKindInputs();
     updateTaskHint();
   });
 
   $("#taskStart").addEventListener("change", () => {
     const s = $("#taskStart").value;
     if ($("#taskEnd").value && $("#taskEnd").value < s) $("#taskEnd").value = s;
+    if ($("#taskKind").value !== "task") $("#taskEnd").value = s;
     updateTaskHint();
   });
 
@@ -1304,7 +1887,161 @@
     renderSidebar();
     renderCalendar();
     renderLists();
+    renderAnalytics();
+    updatePrintMeta();
   });
+
+  window.addEventListener("resize", () => {
+    // keep analytics crisp when layout changes
+    renderAnalytics();
+  });
+
+  function updatePrintMeta() {
+    const ap = activePerson();
+    const q = $("#searchInput").value;
+    const d = new Date(state.ui.selectedDay);
+    const dayLabel = d.toLocaleDateString("de-DE", { weekday: "long", year: "numeric", month: "long", day: "numeric" });
+    const filter = q ? ` · Filter: „${q}“` : "";
+    $("#printMeta").textContent = ap ? `${ap.name} · ${dayLabel}${filter}` : dayLabel;
+  }
+
+  function renderAnalytics() {
+    const ap = activePerson();
+    const q = $("#searchInput").value;
+    const canvas = $("#chartWorkload");
+    const statusBar = $("#statusBar");
+    const legend = $("#statusLegend");
+
+    if (!ap || !canvas || !statusBar || !legend) return;
+
+    // Status counts
+    const buckets = countBuckets(ap.id, q);
+    const total = buckets.inprogress + buckets.planned + buckets.backlog + buckets.done;
+    $("#countOverview").textContent = total;
+
+    // Build statusbar
+    statusBar.innerHTML = "";
+    legend.innerHTML = "";
+
+    const colors = {
+      inprogress: getComputedStyle(document.documentElement).getPropertyValue("--p2").trim(),
+      planned: getComputedStyle(document.documentElement).getPropertyValue("--p1").trim(),
+      backlog: getComputedStyle(document.documentElement).getPropertyValue("--p0").trim(),
+      done: getComputedStyle(document.documentElement).getPropertyValue("--ok").trim()
+    };
+
+    const items = [
+      { key: "inprogress", label: "In Arbeit", val: buckets.inprogress },
+      { key: "planned", label: "Geplant", val: buckets.planned },
+      { key: "backlog", label: "Backlog", val: buckets.backlog },
+      { key: "done", label: "Erledigt", val: buckets.done }
+    ];
+
+    const denom = Math.max(1, total);
+    for (const it of items) {
+      const seg = document.createElement("div");
+      seg.className = "statusseg";
+      seg.style.flex = String(it.val);
+      seg.style.background = colors[it.key];
+      statusBar.appendChild(seg);
+
+      const lab = document.createElement("div");
+      const dot = document.createElement("span");
+      dot.className = "dot";
+      dot.style.background = colors[it.key];
+      lab.appendChild(dot);
+      const txt = document.createElement("span");
+      txt.textContent = `${it.label}: ${it.val}`;
+      lab.appendChild(txt);
+      legend.appendChild(lab);
+    }
+
+    // Workload next 14 days (from today)
+    const startISO = isoToday();
+    const days = [];
+    for (let i = 0; i < 14; i++) {
+      const iso = addDaysISO(startISO, i);
+      const list = tasksForDay(ap.id, iso, q);
+      days.push({ iso, count: list.length });
+    }
+
+    drawWorkloadChart(canvas, days);
+  }
+
+  function drawWorkloadChart(canvas, days) {
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+
+    const cssW = Math.max(320, canvas.clientWidth || 680);
+    const cssH = Math.max(140, canvas.clientHeight || 160);
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = Math.round(cssW * dpr);
+    canvas.height = Math.round(cssH * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+    const cs = getComputedStyle(document.documentElement);
+    const colBar = cs.getPropertyValue("--p1").trim() || "#7aa";
+    const colGrid = cs.getPropertyValue("--soft2").trim() || "rgba(0,0,0,.12)";
+    const colText = cs.getPropertyValue("--muted").trim() || "rgba(0,0,0,.6)";
+
+    ctx.clearRect(0, 0, cssW, cssH);
+
+    const pad = 10;
+    const bottom = cssH - 26;
+    const top = 12;
+    const left = 6;
+    const right = 6;
+    const w = cssW - left - right;
+    const h = bottom - top;
+
+    const max = Math.max(1, ...days.map(d => d.count));
+
+    // grid lines
+    ctx.strokeStyle = colGrid;
+    ctx.lineWidth = 1;
+    for (let i = 0; i <= 3; i++) {
+      const y = top + (h * i / 3);
+      ctx.beginPath();
+      ctx.moveTo(left + pad, y);
+      ctx.lineTo(cssW - right - pad, y);
+      ctx.stroke();
+    }
+
+    const barW = w / days.length;
+    ctx.fillStyle = colBar;
+    for (let i = 0; i < days.length; i++) {
+      const d = days[i];
+      const bh = (d.count / max) * (h - 8);
+      const x = left + i * barW + 4;
+      const y = bottom - bh;
+      const bw = Math.max(6, barW - 8);
+      const r = 6;
+      roundRect(ctx, x, y, bw, bh, r);
+      ctx.fill();
+    }
+
+    // labels (weekday)
+    ctx.fillStyle = colText;
+    ctx.font = "12px system-ui, -apple-system, Segoe UI, Roboto, Arial";
+    for (let i = 0; i < days.length; i++) {
+      if (i % 2 === 1) continue; // keep it compact
+      const d = parseISODate(days[i].iso);
+      const wd = d.toLocaleDateString("de-DE", { weekday: "short" });
+      const x = left + i * barW + 6;
+      ctx.fillText(wd, x, cssH - 8);
+    }
+  }
+
+  function roundRect(ctx, x, y, w, h, r) {
+    const rr = Math.min(r, w / 2, h / 2);
+    ctx.beginPath();
+    ctx.moveTo(x + rr, y);
+    ctx.arcTo(x + w, y, x + w, y + h, rr);
+    ctx.arcTo(x + w, y + h, x, y + h, rr);
+    ctx.arcTo(x, y + h, x, y, rr);
+    ctx.arcTo(x, y, x + w, y, rr);
+    ctx.closePath();
+  }
 
   // ---------- Boot ----------
 
