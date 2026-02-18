@@ -47,12 +47,19 @@
   }
 
   function sortedPeople() {
-    return [...state.people].sort((a, b) => {
+    const people = state.people.filter(p => p.type !== "group").slice();
+    const groups = state.people.filter(p => p.type === "group").slice();
+
+    const sortFn = (a, b) => {
       const ak = personSortKey(a.name);
       const bk = personSortKey(b.name);
       if (ak !== bk) return ak.localeCompare(bk, "de");
       return (a.name || "").localeCompare(b.name || "", "de");
-    });
+    };
+
+    people.sort(sortFn);
+    groups.sort(sortFn);
+    return [...people, ...groups];
   }
 
   // --- Drag helpers ---
@@ -71,10 +78,18 @@
   let holidayYearFetching = null;
   let schoolYearFetching = null;
 
+  function toISODateLocal(date) {
+    const d = new Date(date);
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, "0");
+    const day = String(d.getDate()).padStart(2, "0");
+    return `${y}-${m}-${day}`;
+  }
+
   function isoToday() {
     const d = new Date();
     d.setHours(0, 0, 0, 0);
-    return d.toISOString().slice(0, 10);
+    return toISODateLocal(d);
   }
 
   function parseISODate(iso) {
@@ -94,7 +109,7 @@
   function addDaysISO(iso, days) {
     const d = parseISODate(iso);
     d.setDate(d.getDate() + days);
-    return d.toISOString().slice(0, 10);
+    return toISODateLocal(d);
   }
 
   function addMonthsISO(iso, months) {
@@ -102,8 +117,71 @@
     const day = d.getDate();
     d.setMonth(d.getMonth() + months);
     if (d.getDate() !== day) d.setDate(0);
-    return d.toISOString().slice(0, 10);
+    return toISODateLocal(d);
   }
+
+  // ---------- ISO week helpers (for KW jump + timeline) ----------
+  function startOfWeekISO(iso) {
+    const d = parseISODate(iso);
+    const day = (d.getDay() + 6) % 7; // Mon=0
+    d.setDate(d.getDate() - day);
+    return toISODateLocal(d);
+  }
+
+  function getISOWeekInfo(dateObj) {
+    const d = new Date(dateObj);
+    d.setHours(0, 0, 0, 0);
+
+    // Thursday decides the ISO week-year
+    d.setDate(d.getDate() + 3 - ((d.getDay() + 6) % 7));
+    const weekYear = d.getFullYear();
+
+    const firstThursday = new Date(weekYear, 0, 4);
+    firstThursday.setHours(0, 0, 0, 0);
+    firstThursday.setDate(firstThursday.getDate() + 3 - ((firstThursday.getDay() + 6) % 7));
+
+    const week = 1 + Math.round((d - firstThursday) / 86400000 / 7);
+    return { weekYear, week };
+  }
+
+  function toWeekInputValue(iso) {
+    const d = parseISODate(iso);
+    const { weekYear, week } = getISOWeekInfo(d);
+    return `${weekYear}-W${String(week).padStart(2, "0")}`;
+  }
+
+  function isoFromWeekInput(val) {
+    const m = /^(\d{4})-W(\d{2})$/.exec(String(val || "").trim());
+    if (!m) return null;
+    const year = Number(m[1]);
+    const week = Number(m[2]);
+    if (!year || !week) return null;
+
+    const jan4 = new Date(year, 0, 4);
+    jan4.setHours(0, 0, 0, 0);
+    const day = (jan4.getDay() + 6) % 7;
+
+    const monday = new Date(jan4);
+    monday.setDate(jan4.getDate() - day + (week - 1) * 7);
+    return toISODateLocal(monday);
+  }
+
+  function clampDayToMonthISO(iso, monthStr) {
+    const [y, m] = String(monthStr || "").split("-").map(Number);
+    const day = Number(String(iso || "").split("-")[2]) || 1;
+    if (!y || !m) return isoToday();
+
+    const last = new Date(y, m, 0).getDate();
+    const d = Math.min(Math.max(day, 1), last);
+    return `${y}-${String(m).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+  }
+
+  function diffDaysISO(aISO, bISO) {
+    const a = parseISODate(aISO);
+    const b = parseISODate(bISO);
+    return Math.round((a - b) / 86400000);
+  }
+
 
   function nextRepeatStart(iso, repeat) {
     if (repeat === "daily") return addDaysISO(iso, 1);
@@ -296,6 +374,11 @@
   function normalizePerson(p) {
     p.id ??= uid();
     p.name = clampStr(p.name) || "Unbenannt";
+    p.type = clampStr(p.type) || "person";
+    if (!["person", "group"].includes(p.type)) p.type = "person";
+    p.role = clampStr(p.role) || "";
+    p.members = Array.isArray(p.members) ? p.members.filter(Boolean) : [];
+    if (p.type !== "group") p.members = [];
     p.createdAt ??= new Date().toISOString();
     return p;
   }
@@ -451,8 +534,102 @@
     return state.people.find(p => p.id === id)?.name || "(unbekannt)";
   }
 
+  function personById(id) {
+    return state.people.find(p => p.id === id) || null;
+  }
+
+  function resolveGroupPersonIds(groupId, visited = new Set()) {
+    const g = personById(groupId);
+    if (!g || g.type !== "group") return [];
+    if (visited.has(groupId)) return [];
+    visited.add(groupId);
+
+    const out = [];
+    for (const mid of (g.members || [])) {
+      const m = personById(mid);
+      if (!m) continue;
+      if (m.type === "group") out.push(...resolveGroupPersonIds(m.id, visited));
+      else out.push(m.id);
+    }
+    return out;
+  }
+
+  function groupIdsForPerson(personId) {
+    const direct = state.people
+      .filter(p => p.type === "group" && Array.isArray(p.members) && p.members.includes(personId))
+      .map(p => p.id);
+
+    const seen = new Set(direct);
+    const stack = [...direct];
+
+    while (stack.length) {
+      const gid = stack.pop();
+      for (const g of state.people) {
+        if (g.type !== "group" || !Array.isArray(g.members)) continue;
+        if (g.members.includes(gid) && !seen.has(g.id)) {
+          seen.add(g.id);
+          stack.push(g.id);
+        }
+      }
+    }
+    return [...seen];
+  }
+
+  function effectiveAssigneeIdsForView(activeId) {
+    const p = personById(activeId);
+    if (!p) return [activeId];
+
+    if (p.type === "group") {
+      const groupIds = new Set([p.id]);
+      const stack = [...(p.members || [])];
+      while (stack.length) {
+        const id = stack.pop();
+        if (groupIds.has(id)) continue;
+        groupIds.add(id);
+        const x = personById(id);
+        if (x?.type === "group" && Array.isArray(x.members)) {
+          for (const mid of x.members) stack.push(mid);
+        }
+      }
+      const memberPersons = resolveGroupPersonIds(p.id);
+      return [...new Set([...groupIds, ...memberPersons])];
+    }
+
+    return [...new Set([p.id, ...groupIdsForPerson(p.id)])];
+  }
+
   function tasksForPerson(personId) {
-    return state.tasks.filter(t => Array.isArray(t.assignees) && t.assignees.includes(personId));
+    const ids = new Set(effectiveAssigneeIdsForView(personId));
+    return state.tasks.filter(t =>
+      Array.isArray(t.assignees) && t.assignees.some(a => ids.has(a))
+    );
+  }
+
+  function expandedAssigneeNames(assigneeIds) {
+    const parts = [];
+    for (const id of (assigneeIds || [])) {
+      const p = personById(id);
+      if (!p) continue;
+      if (p.type === "group") {
+        const members = resolveGroupPersonIds(p.id).map(personNameById).filter(x => x && x !== "(unbekannt)");
+        parts.push(members.length ? `${p.name} (${members.join(", ")})` : p.name);
+      } else {
+        parts.push(p.name);
+      }
+    }
+    return [...new Set(parts)];
+  }
+
+  function expandedAssigneePersonCount(assigneeIds) {
+    const out = new Set();
+    for (const id of (assigneeIds || [])) {
+      const p = personById(id);
+      if (!p) continue;
+      if (p.type === "group") {
+        for (const mid of resolveGroupPersonIds(p.id)) out.add(mid);
+      } else out.add(p.id);
+    }
+    return out.size;
   }
 
   function filterMatch(t, q) {
@@ -641,11 +818,11 @@
 
       const name = document.createElement("div");
       name.className = "person-name";
-      name.textContent = p.name;
+      name.textContent = `${p.type === "group" ? "👥 " : ""}${p.name}`;
 
       const meta = document.createElement("div");
       meta.className = "person-meta";
-      meta.textContent = `🟠 ${counts.inprogress}  |  🗓 ${counts.planned}  |  📦 ${counts.backlog}`;
+      meta.textContent = `${p.type === "group" ? "Gruppe" : "Person"}${p.role ? " · " + p.role : ""} · 🟠 ${counts.inprogress}  |  🗓 ${counts.planned}  |  📦 ${counts.backlog}`;
 
       left.appendChild(name);
       left.appendChild(meta);
@@ -717,6 +894,13 @@
 
     $("#calendarMonthLabel").textContent = fmtMonthLabel(y, m0);
 
+    // sync jump inputs
+    const jm = $("#jumpMonth");
+    if (jm) jm.value = state.ui.month;
+    const jw = $("#jumpWeek");
+    if (jw) jw.value = toWeekInputValue(state.ui.selectedDay);
+
+
     const firstOfMonth = new Date(y, m0, 1);
 
     const weekdayMonBased = (d) => (d.getDay() + 6) % 7;
@@ -731,7 +915,7 @@
     for (let i = 0; i < totalCells; i++) {
       const d = new Date(startDate);
       d.setDate(startDate.getDate() + i);
-      const iso = d.toISOString().slice(0, 10);
+      const iso = toISODateLocal(d);
       const inMonth = d.getMonth() === m0;
 
       const cell = document.createElement("div");
@@ -856,7 +1040,209 @@
       `Ausgewählt: ${new Date(selIso).toLocaleDateString("de-DE", { weekday: "long", year: "numeric", month: "long", day: "numeric" })}${holTxt}`;
   }
 
-  function renderLists() {
+  
+  function renderTimeline() {
+    const grid = $("#timelineGrid");
+    const label = $("#timelineRangeLabel");
+    const printBox = $("#timelinePrint");
+    if (!grid || !label) return;
+
+    grid.innerHTML = "";
+    if (printBox) printBox.innerHTML = "";
+
+    const ap = activePerson();
+    if (!ap) {
+      label.textContent = "—";
+      return;
+    }
+
+    const q = $("#searchInput").value;
+    const rangeStart = startOfWeekISO(state.ui.selectedDay);
+    const days = 14;
+    const rangeEnd = addDaysISO(rangeStart, days - 1);
+
+    const wi = getISOWeekInfo(parseISODate(rangeStart));
+    label.textContent = `KW ${String(wi.week).padStart(2, "0")} · ${rangeStart} bis ${rangeEnd}`;
+
+    grid.style.gridTemplateColumns = `minmax(170px, 260px) repeat(${days}, minmax(30px, 1fr))`;
+    grid.style.gridAutoRows = "34px";
+
+    // Corner (top-left)
+    const corner = document.createElement("div");
+    corner.className = "tl-label";
+    corner.style.gridColumn = "1";
+    corner.style.gridRow = "1";
+    corner.textContent = " ";
+    grid.appendChild(corner);
+
+    // Header days
+    const today = isoToday();
+    const selected = state.ui.selectedDay;
+
+    for (let i = 0; i < days; i++) {
+      const iso = addDaysISO(rangeStart, i);
+      const d = parseISODate(iso);
+      const dayTxt = d.toLocaleDateString("de-DE", { weekday: "short", day: "2-digit" });
+
+      const cell = document.createElement("div");
+      cell.className = "tl-day" + (iso === today ? " today" : "");
+      if (iso === selected) cell.style.borderColor = "var(--p2)";
+      cell.style.gridColumn = String(2 + i);
+      cell.style.gridRow = "1";
+      cell.textContent = dayTxt.replace(".", "");
+      cell.title = d.toLocaleDateString("de-DE", { weekday: "long", year: "numeric", month: "long", day: "numeric" });
+      cell.addEventListener("click", () => {
+        state.ui.selectedDay = iso;
+        state.ui.month = iso.slice(0, 7);
+        saveState();
+        renderAll();
+      });
+
+      grid.appendChild(cell);
+    }
+
+    // Tasks that overlap the range
+    const tasks = tasksForPerson(ap.id)
+      .filter(t => filterMatch(t, q))
+      .filter(t => t.status !== "done" && t.status !== "backlog" && t.start && t.end)
+      .filter(t => !(t.end < rangeStart || t.start > rangeEnd))
+      .slice();
+
+    tasks.sort((a, b) => {
+      const aS = (a.status === "inprogress") ? 0 : 1;
+      const bS = (b.status === "inprogress") ? 0 : 1;
+      if (aS !== bS) return aS - bS;
+      if (a.start !== b.start) return (a.start || "").localeCompare(b.start || "");
+      return (b.priority ?? 0) - (a.priority ?? 0);
+    });
+
+    const maxRows = 12;
+    const shown = tasks.slice(0, maxRows);
+
+    shown.forEach((t, idx) => {
+      const row = 2 + idx;
+
+      const icon = (t.kind === "appointment") ? "🕒" : (t.kind === "milestone" ? "🏁" : "🧩");
+      const labelCell = document.createElement("div");
+      labelCell.className = "tl-label";
+      labelCell.style.gridColumn = "1";
+      labelCell.style.gridRow = String(row);
+      labelCell.title = t.note || "";
+      labelCell.textContent = `${icon} ${t.title || "(ohne Titel)"}`;
+
+      const rangeTxt = `${t.start}${t.end !== t.start ? "–" + t.end : ""}`;
+      const small = document.createElement("span");
+      small.className = "muted";
+      small.textContent = ` · ${rangeTxt}`;
+      labelCell.appendChild(small);
+
+      labelCell.addEventListener("click", () => openTaskDialog(t, { keepSelectedDay: true }));
+
+      grid.appendChild(labelCell);
+
+      let s = Math.max(0, diffDaysISO(t.start, rangeStart));
+      let e = Math.min(days - 1, diffDaysISO(t.end, rangeStart));
+      if (e < s) e = s;
+
+      const bar = document.createElement("div");
+      bar.className = `tl-bar status-${t.status} kind-${t.kind}`;
+      bar.style.gridColumn = `${2 + s} / ${2 + e + 1}`;
+      bar.style.gridRow = String(row);
+      bar.title = `${taskKindText(t)} · ${statusText(t.status)} · ${t.title || ""}`;
+      grid.appendChild(bar);
+    });
+
+    if (tasks.length > maxRows) {
+      const row = 2 + maxRows;
+      const more = document.createElement("div");
+      more.className = "tl-label";
+      more.style.gridColumn = "1 / -1";
+      more.style.gridRow = String(row);
+      more.textContent = `+ ${tasks.length - maxRows} weitere Einträge (Filter nutzen)`;
+      grid.appendChild(more);
+    }
+
+    // Print-friendly list (hidden on screen)
+    if (printBox) {
+      const lines = tasks.slice(0, 30).map(t => {
+        const persons = expandedAssigneeNames(t.assignees).join(", ");
+        const time = taskTimeText(t);
+        const range = taskRangeText(t);
+        return `${range}${time ? " · " + time : ""} · ${taskKindText(t)} · ${statusText(t.status)} · ${t.title}${persons ? " · " + persons : ""}`;
+      });
+      printBox.textContent = lines.join("\n");
+    }
+  }
+
+  function renderPrintProjects() {
+    const box = $("#printProjects");
+    if (!box) return;
+
+    const ap = activePerson();
+    if (!ap) {
+      box.textContent = "";
+      return;
+    }
+
+    const q = $("#searchInput").value;
+
+    const rangeStart = state.ui.selectedDay;
+    const rangeEnd = addDaysISO(rangeStart, 89); // next ~90 days from selected day
+
+    const tasks = tasksForPerson(ap.id)
+      .filter(t => filterMatch(t, q))
+      .filter(t => t.status !== "done" && t.status !== "backlog" && t.start && t.end)
+      .filter(t => !(t.end < rangeStart || t.start > rangeEnd))
+      .slice();
+
+    tasks.sort((a, b) => {
+      if (a.start !== b.start) return (a.start || "").localeCompare(b.start || "");
+      return (b.priority ?? 0) - (a.priority ?? 0);
+    });
+
+    if (tasks.length === 0) {
+      box.textContent = "";
+      return;
+    }
+
+    box.innerHTML = "";
+    const title = document.createElement("div");
+    title.className = "print-projects-title";
+    title.textContent = `Aktive Einträge (nächste 90 Tage ab ${rangeStart})`;
+    box.appendChild(title);
+
+    const table = document.createElement("table");
+    table.className = "print-projects-table";
+
+    const thead = document.createElement("thead");
+    thead.innerHTML = "<tr><th>Zeitraum</th><th>Typ</th><th>Status</th><th>Personen</th><th>Titel</th></tr>";
+    table.appendChild(thead);
+
+    const tbody = document.createElement("tbody");
+    for (const t of tasks) {
+      const persons = expandedAssigneeNames(t.assignees).join(", ");
+      const time = taskTimeText(t);
+      const period = `${taskRangeText(t)}${time ? " · " + time : ""}`;
+
+      const tr = document.createElement("tr");
+      const esc = (s) => String(s ?? "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;");
+
+      tr.innerHTML = `<td>${esc(period)}</td>
+                      <td>${esc(taskKindText(t))}</td>
+                      <td>${esc(statusText(t.status))}</td>
+                      <td>${esc(persons)}</td>
+                      <td>${esc(t.title || "")}</td>`;
+      tbody.appendChild(tr);
+    }
+    table.appendChild(tbody);
+    box.appendChild(table);
+  }
+
+function renderLists() {
     const ap = activePerson();
     const q = $("#searchInput").value;
 
@@ -990,11 +1376,12 @@
     sub.appendChild(p4);
     sub.appendChild(pK);
 
-    if (t.assignees?.length > 1) {
+    const aCount = expandedAssigneePersonCount(t.assignees);
+    if (aCount > 1) {
       const pA = document.createElement("span");
       pA.className = "pill";
-      pA.textContent = `👥 ${t.assignees.length}`;
-      pA.title = t.assignees.map(personNameById).join(", ");
+      pA.textContent = `👥 ${aCount}`;
+      pA.title = expandedAssigneeNames(t.assignees).join(", ");
       sub.appendChild(pA);
     }
 
@@ -1117,9 +1504,11 @@
     renderSidebar();
     renderWeekdays();
     renderCalendar();
+    renderTimeline();
     renderLists();
     renderAnalytics();
     updatePrintMeta();
+    renderPrintProjects();
     updateSaveInfo();
 
     // Load holidays/ferien in the background (no blocking). When available, we re-render once.
@@ -1153,23 +1542,79 @@
 
   const personDialog = $("#personDialog");
 
+  function updateGroupMembersVisibility() {
+    const field = $("#groupMembersField");
+    if (!field) return;
+    field.hidden = ($("#personType").value !== "group");
+  }
+
+  function renderGroupMembersPicker(selectedIds = [], editingId = null) {
+    const box = $("#groupMembers");
+    if (!box) return;
+    box.innerHTML = "";
+
+    const items = sortedPeople().filter(p => p.id !== editingId);
+    if (items.length === 0) {
+      const empty = document.createElement("div");
+      empty.className = "tiny muted";
+      empty.textContent = "Keine Einträge vorhanden.";
+      box.appendChild(empty);
+      return;
+    }
+
+    for (const p of items) {
+      const label = document.createElement("label");
+      label.className = "member-item";
+
+      const cb = document.createElement("input");
+      cb.type = "checkbox";
+      cb.value = p.id;
+      cb.checked = selectedIds.includes(p.id);
+
+      const span = document.createElement("span");
+      span.textContent = `${p.type === "group" ? "Gruppe: " : ""}${p.name}${p.role ? " · " + p.role : ""}`;
+
+      label.appendChild(cb);
+      label.appendChild(span);
+      box.appendChild(label);
+    }
+  }
+
   function openPersonDialog(person = null) {
     $("#personEditId").value = person?.id || "";
-    $("#personDialogTitle").textContent = person ? "Person umbenennen" : "Person hinzufügen";
+    $("#personDialogTitle").textContent = person ? (person.type === "group" ? "Gruppe bearbeiten" : "Person bearbeiten") : "Person hinzufügen";
     $("#personName").value = person?.name || "";
+    $("#personType").value = person?.type || "person";
+    $("#personRole").value = person?.role || "";
+    renderGroupMembersPicker(person?.members || [], person?.id || null);
+    updateGroupMembersVisibility();
+
     safeShowModal(personDialog);
     setTimeout(() => $("#personName").focus(), 50);
   }
 
-  function upsertPerson(name, id = null) {
-    const clean = clampStr(name);
+  function upsertPerson(data, id = null) {
+    const clean = clampStr(data?.name);
     if (!clean) return;
+
+    const type = (data?.type === "group") ? "group" : "person";
+    const role = clampStr(data?.role) || "";
+    const rawMembers = Array.isArray(data?.members) ? data.members.filter(Boolean) : [];
+
+    const validIds = new Set(state.people.map(p => p.id));
+    const members = [...new Set(rawMembers.filter(mid => validIds.has(mid)))];
 
     if (id) {
       const p = state.people.find(x => x.id === id);
-      if (p) p.name = clean;
+      if (p) {
+        p.name = clean;
+        p.type = type;
+        p.role = role;
+        p.members = (type === "group") ? members.filter(mid => mid !== id) : [];
+      }
     } else {
-      const p = normalizePerson({ id: uid(), name: clean, createdAt: new Date().toISOString() });
+      const p = normalizePerson({ id: uid(), name: clean, type, role, members, createdAt: new Date().toISOString() });
+      p.members = (p.type === "group") ? p.members.filter(mid => mid !== p.id) : [];
       state.people.unshift(p);
       state.ui.activePersonId = p.id;
     }
@@ -1189,6 +1634,13 @@
 
     // Remove person
     state.people = state.people.filter(x => x.id !== id);
+
+    // Remove from group memberships
+    for (const g of state.people) {
+      if (g.type === "group" && Array.isArray(g.members)) {
+        g.members = g.members.filter(mid => mid !== id);
+      }
+    }
 
     // Unassign tasks and drop orphans
     state.tasks = state.tasks
@@ -1223,7 +1675,7 @@
       cb.checked = selectedIds.includes(p.id);
 
       const span = document.createElement("span");
-      span.textContent = p.name;
+      span.textContent = `${p.type === "group" ? "Gruppe: " : ""}${p.name}${p.role ? " · " + p.role : ""}`;
 
       label.appendChild(cb);
       label.appendChild(span);
@@ -1572,7 +2024,7 @@
 
     const lines = [header.map(csvEscape).join(";")];
     for (const t of tasks) {
-      const persons = (t.assignees || []).map(personNameById).join(", ");
+      const persons = expandedAssigneeNames(t.assignees).join(", ");
       lines.push([
         persons,
         taskKindText(t),
@@ -1724,10 +2176,20 @@
     }
   });
 
+  $("#personType").addEventListener("change", () => {
+    updateGroupMembersVisibility();
+  });
+
   $("#personSubmit").addEventListener("click", () => {
     const name = $("#personName").value;
+    const type = $("#personType").value;
+    const role = $("#personRole").value;
+
+    const members = [...document.querySelectorAll("#groupMembers input[type=checkbox]:checked")]
+      .map(cb => cb.value);
+
     const editId = $("#personEditId").value || null;
-    upsertPerson(name, editId);
+    upsertPerson({ name, type, role, members }, editId);
     safeCloseModal(personDialog);
     $("#btnToggleSidebar").disabled = (state.people.length === 0);
   });
@@ -1836,6 +2298,7 @@
       y -= 1;
     }
     state.ui.month = `${y}-${String(m).padStart(2, "0")}`;
+    state.ui.selectedDay = clampDayToMonthISO(state.ui.selectedDay, state.ui.month);
     saveState();
     renderAll();
   });
@@ -1848,7 +2311,34 @@
       m = 1;
       y += 1;
     }
-    state.ui.month = `${y}-${String(m).padStart(2, "0")}`;
+    state.ui.
+
+  // Quick jump: month / KW
+  const jumpMonthEl = $("#jumpMonth");
+  if (jumpMonthEl) {
+    jumpMonthEl.addEventListener("change", () => {
+      const v = String(jumpMonthEl.value || "").trim();
+      if (!/^\d{4}-\d{2}$/.test(v)) return;
+      state.ui.month = v;
+      state.ui.selectedDay = clampDayToMonthISO(state.ui.selectedDay, v);
+      saveState();
+      renderAll();
+    });
+  }
+
+  const jumpWeekEl = $("#jumpWeek");
+  if (jumpWeekEl) {
+    jumpWeekEl.addEventListener("change", () => {
+      const iso = isoFromWeekInput(jumpWeekEl.value);
+      if (!iso) return;
+      state.ui.selectedDay = iso;
+      state.ui.month = iso.slice(0, 7);
+      saveState();
+      renderAll();
+    });
+  }
+month = `${y}-${String(m).padStart(2, "0")}`;
+    state.ui.selectedDay = clampDayToMonthISO(state.ui.selectedDay, state.ui.month);
     saveState();
     renderAll();
   });
