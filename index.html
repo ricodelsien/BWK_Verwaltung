@@ -59,12 +59,28 @@
             <div class="calendar-nav">
               <button class="icon-btn" id="btnPrevMonth" aria-label="Vorheriger Monat">◀</button>
               <div class="calendar-month" id="calendarMonthLabel">—</div>
-              <button class="icon-btn" id="btnNextMonth" aria-label="Nächster Monat">▶</button>
+              
+            <div class="calendar-jump" aria-label="Schnellsprung">
+              <input class="jump" id="jumpMonth" type="month" aria-label="Monat wählen" />
+              <input class="jump" id="jumpWeek" type="week" aria-label="Kalenderwoche wählen" />
+            </div>
+<button class="icon-btn" id="btnNextMonth" aria-label="Nächster Monat">▶</button>
             </div>
           </div>
 
           <div class="weekday-row" id="weekdayRow"></div>
           <div class="calendar-grid" id="calendarGrid"></div>
+
+          <div class="timeline-area">
+            <div class="timeline-head">
+              <div class="tiny">Aktive Projekte / Termine (nächste 14 Tage)</div>
+              <div class="tiny muted" id="timelineRangeLabel">—</div>
+            </div>
+            <div class="timeline-wrap">
+              <div id="timelineGrid" class="timeline-grid" role="table" aria-label="Zeitstrahl"></div>
+              <div id="timelinePrint" class="timeline-print"></div>
+            </div>
+          </div>
 
           <div class="calendar-foot">
             <div class="tiny" id="selectedDayLabel">—</div>
@@ -83,6 +99,8 @@
           </div>
 
       <div class="print-meta" id="printMeta"></div>
+
+      <div class="print-only" id="printProjects"></div>
 
       <details class="section" open>
         <summary class="section-title">Planungs-Übersicht <span class="count" id="countOverview">0</span></summary>
@@ -144,6 +162,26 @@
         <span>Name</span>
         <input id="personName" type="text" required minlength="1" maxlength="40" placeholder="z. B. Nico, Team AVöD, …" />
       </label>
+
+      <div class="row">
+        <label class="field">
+          <span>Typ</span>
+          <select id="personType">
+            <option value="person">Person</option>
+            <option value="group">Gruppe</option>
+          </select>
+        </label>
+        <label class="field">
+          <span>Rolle (optional)</span>
+          <input id="personRole" type="text" maxlength="40" placeholder="z. B. Projektleitung, Mentor, …" />
+        </label>
+      </div>
+
+      <div class="field" id="groupMembersField" hidden>
+        <span>Mitglieder</span>
+        <div class="members" id="groupMembers"></div>
+        <div class="tiny muted">Tipp: Du kannst auch Gruppen auswählen (Merge). Beim Anzeigen/Export werden Mitglieder aufgelöst.</div>
+      </div>
 
       <div class="modal-actions">
         <button class="btn ghost" id="personCancel" type="button">Abbrechen</button>

@@ -748,3 +748,156 @@ details[open] > summary.section-title::after{ content: "▴"; }
   /* Slightly smaller to fit better */
   body{ zoom: .95; }
 }
+
+
+
+/* ========== Calendar jump + timeline ========== */
+.calendar-jump{
+  display:flex;
+  gap:10px;
+  align-items:center;
+  margin-top: 10px;
+}
+.jump{
+  height: 38px;
+  min-width: 140px;
+  padding: 8px 10px;
+  border-radius: 12px;
+  border: 1px solid var(--soft2);
+  background: var(--input-bg);
+  outline: none;
+  font-size: 14px;
+}
+.jump:focus{
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-ring);
+}
+@media (max-width: 520px){
+  .calendar-jump{
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .jump{ min-width: 0; width: 100%; }
+}
+
+.timeline-area{
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--soft2);
+}
+.timeline-head{
+  display:flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+.timeline-wrap{
+  border: 1px solid var(--soft2);
+  background: var(--surface);
+  border-radius: 16px;
+  padding: 10px;
+  overflow-x: auto;
+}
+.timeline-grid{
+  display:grid;
+  gap: 6px;
+  min-width: 620px;
+}
+.tl-day{
+  font-size: 12px;
+  opacity: .85;
+  text-align: center;
+  padding: 6px 4px;
+  border-radius: 10px;
+  border: 1px solid transparent;
+}
+.tl-day.today{
+  border-color: var(--accent);
+  background: var(--accent-surface);
+}
+.tl-label{
+  font-size: 13px;
+  line-height: 1.2;
+  padding: 6px 8px;
+  border-radius: 12px;
+  background: rgba(255,255,255,.03);
+  border: 1px solid rgba(255,255,255,.06);
+  overflow:hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tl-label .muted{
+  opacity: .65;
+  font-size: 12px;
+  margin-left: 6px;
+}
+.tl-bar{
+  height: 18px;
+  border-radius: 999px;
+  align-self: center;
+  background: rgba(242,246,255,.18);
+  border: 1px solid rgba(242,246,255,.22);
+}
+.tl-bar.status-planned{ background: rgba(140,200,255,.20); border-color: rgba(140,200,255,.28); }
+.tl-bar.status-inprogress{ background: rgba(255,200,120,.22); border-color: rgba(255,200,120,.35); }
+.tl-bar.status-done{ background: rgba(110,210,140,.18); border-color: rgba(110,210,140,.25); }
+.tl-bar.kind-appointment{ background: rgba(110,210,140,.20); border-color: rgba(110,210,140,.28); }
+.tl-bar.kind-milestone{ background: rgba(255,120,120,.18); border-color: rgba(255,120,120,.25); }
+
+.timeline-print{ display:none; }
+
+/* ========== Group editor ========== */
+.members{
+  border: 1px solid var(--soft2);
+  background: var(--input-bg);
+  border-radius: 14px;
+  padding: 8px;
+  max-height: 220px;
+  overflow: auto;
+}
+.member-item{
+  display:flex;
+  align-items:center;
+  gap: 10px;
+  padding: 8px 8px;
+  border-radius: 12px;
+}
+.member-item:hover{
+  background: rgba(255,255,255,.03);
+}
+.member-item input{ width: 18px; height: 18px; }
+
+/* ========== Print helpers ========== */
+.print-only{ display:none; }
+@media print{
+  .print-only{ display:block !important; }
+  .timeline-grid{ display:none !important; }
+  .timeline-print{ display:block !important; }
+  #printProjects{
+    margin: 10px 0 14px;
+    padding: 10px 12px;
+    border: 1px solid #ddd;
+    border-radius: 10px;
+    background: #fff;
+  }
+  .print-projects-title{
+    font-weight: 700;
+    margin: 0 0 8px;
+  }
+  .print-projects-table{
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 11px;
+  }
+  .print-projects-table th,
+  .print-projects-table td{
+    border: 1px solid #ddd;
+    padding: 6px 8px;
+    vertical-align: top;
+  }
+  .print-projects-table th{
+    background: #f5f5f5;
+    font-weight: 700;
+  }
+}
