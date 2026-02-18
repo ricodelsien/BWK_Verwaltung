@@ -85,17 +85,15 @@
           <div class="calendar-foot">
             <div class="tiny" id="selectedDayLabel">—</div>
           </div>
-
-          <details class="ferien" id="ferienDetails">
-            <summary class="tiny">Ferien (Berlin) <span class="muted" id="ferienSummary"></span></summary>
-            <div class="tiny" id="ferienBox">—</div>
-          </details>
         </div>
 
         <div class="card lists-card">
           <div class="card-head">
             <div class="card-title">Aufgaben</div>
-            <div class="chip" id="activePersonChip">—</div>
+            <div class="head-right">
+              <button class="icon-btn" id="btnToggleAllSections" aria-label="Alle Abschnitte ausklappen" title="Alle Abschnitte ausklappen">＋</button>
+              <div class="chip" id="activePersonChip">—</div>
+            </div>
           </div>
 
       <div class="print-meta" id="printMeta"></div>
@@ -245,6 +243,19 @@
           <div class="tiny">Wenn du keinen Termin planst, ignorieren.</div>
         </label>
       </div>
+
+      <div class="row" id="repeatUntilRow">
+        <label class="field">
+          <span>Wiederholung bis</span>
+          <input id="taskRepeatUntil" type="date" />
+          <div class="tiny">Optionales Enddatum (inkl.).</div>
+        </label>
+        <label class="field ghost" aria-hidden="true">
+          <span>&nbsp;</span>
+          <div class="tiny">Leer lassen = ohne Ende.</div>
+        </label>
+      </div>
+
 
       <label class="field inline">
         <input id="taskIsBacklog" type="checkbox" />

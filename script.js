@@ -2,8 +2,8 @@
 (() => {
   const APP = {
     name: "BWK-Aufgabenplanung",
-    version: "0.4",
-    buildDate: "2026-02-17",
+    version: "0.6.1",
+    buildDate: "2026-02-18",
     author: "Nico Siedler"
   };
 
@@ -390,6 +390,8 @@
     t.priority = Number(t.priority ?? 0);
     t.repeat ??= "none";
 
+    t.repeatUntil = clampStr(t.repeatUntil) || null;
+
     // Type: task | appointment | milestone
     t.kind ??= "task";
     const okKind = new Set(["task", "appointment", "milestone"]);
@@ -418,6 +420,14 @@
       }
 
       t.status ??= "planned";
+    }
+
+        // Repeat end handling
+    if (t.isBacklog || t.repeat === "none") {
+      t.repeatUntil = null;
+    } else if (t.repeatUntil && t.repeatUntil < t.start) {
+      // Defensive: invalid end before start
+      t.repeatUntil = t.start;
     }
 
     t.assignees = Array.isArray(t.assignees) ? t.assignees.filter(Boolean) : [];
@@ -728,7 +738,7 @@
   }
 
   function advanceRepeatingTask(t) {
-    if (t.isBacklog || t.repeat === "none") return;
+    if (t.isBacklog || t.repeat === "none") return false;
 
     const start = t.start;
     const end = t.end ?? t.start;
@@ -738,12 +748,16 @@
     const durDays = Math.max(0, Math.round((de - ds) / 86400000));
 
     const newStart = nextRepeatStart(start, t.repeat);
+
+    const until = t.repeatUntil;
+    if (until && newStart > until) return false;
     const newEnd = addDaysISO(newStart, durDays);
 
     t.start = newStart;
     t.end = newEnd;
     t.status = "planned";
     t.doneAt = null;
+    return true;
   }
 
   function updateSaveInfo() {
@@ -778,93 +792,139 @@
 
   // ---------- Rendering ----------
 
-  function renderSidebar() {
+    function renderSidebar() {
     const list = $("#personList");
     list.innerHTML = "";
 
     const q = $("#searchInput").value;
+    const all = sortedPeople();
+    const persons = all.filter(p => p.type !== "group");
+    const groups = all.filter(p => p.type === "group");
 
-    const people = sortedPeople();
+    const renderSection = (title, items) => {
+      const head = document.createElement("div");
+      head.className = "person-section-title";
+      head.textContent = title;
+      list.appendChild(head);
 
-    if (people.length === 0) {
+      if (!items.length) {
+        const empty = document.createElement("div");
+        empty.className = "tiny muted person-section-empty";
+        empty.textContent = "—";
+        list.appendChild(empty);
+        return;
+      }
+
+      for (const p of items) {
+        const isActive = p.id === state.ui.activePersonId;
+        const counts = countBuckets(p.id, q);
+
+        const item = document.createElement("div");
+        item.className = "person-item" + (isActive ? " active" : "") + (p.type === "group" ? " is-group" : "");
+        item.draggable = true;
+
+        item.addEventListener("dragstart", (e) => {
+          try {
+            e.dataTransfer.setData("text/person-id", p.id);
+            e.dataTransfer.setData("text/plain", p.id);
+            e.dataTransfer.effectAllowed = "copy";
+          } catch {
+            // ignore
+          }
+          item.classList.add("dragging");
+        });
+        item.addEventListener("dragend", () => item.classList.remove("dragging"));
+
+        const left = document.createElement("div");
+        left.className = "person-left";
+
+        const name = document.createElement("div");
+        name.className = "person-name";
+        name.textContent = `${p.type === "group" ? "👥 " : ""}${p.name}`;
+
+        const role = document.createElement("div");
+        role.className = "person-role";
+        role.textContent = `${p.type === "group" ? "Gruppe" : "Person"}${p.role ? " · " + p.role : ""}`;
+
+        const stats = document.createElement("div");
+        stats.className = "person-stats";
+
+        const mkStat = (icon, val, title) => {
+          const s = document.createElement("span");
+          s.className = "stat";
+          s.title = title;
+          s.setAttribute("aria-label", `${title}: ${val}`);
+          const i = document.createElement("span");
+          i.className = "stat-ic";
+          i.textContent = icon;
+          const v = document.createElement("span");
+          v.className = "stat-val";
+          v.textContent = String(val);
+          s.appendChild(i);
+          s.appendChild(v);
+          return s;
+        };
+
+        stats.appendChild(mkStat("🟠", counts.inprogress, "In Arbeit"));
+        stats.appendChild(mkStat("🗓", counts.planned, "Geplant"));
+        stats.appendChild(mkStat("📦", counts.backlog, "Backlog"));
+
+        left.appendChild(name);
+        left.appendChild(role);
+        left.appendChild(stats);
+
+        const actions = document.createElement("div");
+        actions.className = "person-actions";
+
+        const edit = document.createElement("button");
+        edit.className = "icon-btn";
+        edit.type = "button";
+        edit.title = "Bearbeiten";
+        edit.textContent = "✏️";
+        edit.addEventListener("click", (e) => {
+          e.stopPropagation();
+          openPersonDialog(p);
+        });
+
+        const del = document.createElement("button");
+        del.className = "icon-btn";
+        del.type = "button";
+        del.title = "Löschen";
+        del.textContent = "🗑️";
+        del.addEventListener("click", (e) => {
+          e.stopPropagation();
+          deletePerson(p.id);
+        });
+
+        actions.appendChild(edit);
+        actions.appendChild(del);
+
+        item.appendChild(left);
+        item.appendChild(actions);
+
+        item.addEventListener("click", () => {
+          state.ui.activePersonId = p.id;
+          saveState();
+          renderAll();
+          closeSidebarOnMobile();
+        });
+
+        list.appendChild(item);
+      }
+    };
+
+    // Empty state
+    if (all.length === 0) {
       const empty = document.createElement("div");
       empty.className = "tiny";
-      empty.textContent = "Noch keine Personen. Mit '＋' hinzufügen.";
+      empty.textContent = "Noch keine Personen oder Gruppen. Mit '＋' hinzufügen.";
       list.appendChild(empty);
-    }
-
-    for (const p of people) {
-      const isActive = p.id === state.ui.activePersonId;
-      const counts = countBuckets(p.id, q);
-
-      const item = document.createElement("div");
-      item.className = "person-item" + (isActive ? " active" : "");
-      item.draggable = true;
-
-      item.addEventListener("dragstart", (e) => {
-        try {
-          e.dataTransfer.setData("text/person-id", p.id);
-          e.dataTransfer.setData("text/plain", p.id);
-          e.dataTransfer.effectAllowed = "copy";
-        } catch {
-          // ignore
-        }
-        item.classList.add("dragging");
-      });
-      item.addEventListener("dragend", () => item.classList.remove("dragging"));
-
-      const left = document.createElement("div");
-      left.style.minWidth = "0";
-
-      const name = document.createElement("div");
-      name.className = "person-name";
-      name.textContent = `${p.type === "group" ? "👥 " : ""}${p.name}`;
-
-      const meta = document.createElement("div");
-      meta.className = "person-meta";
-      meta.textContent = `${p.type === "group" ? "Gruppe" : "Person"}${p.role ? " · " + p.role : ""} · 🟠 ${counts.inprogress}  |  🗓 ${counts.planned}  |  📦 ${counts.backlog}`;
-
-      left.appendChild(name);
-      left.appendChild(meta);
-
-      const actions = document.createElement("div");
-      actions.style.display = "flex";
-      actions.style.gap = "6px";
-
-      const edit = document.createElement("button");
-      edit.className = "icon-btn";
-      edit.type = "button";
-      edit.title = "Umbenennen";
-      edit.textContent = "✏️";
-      edit.addEventListener("click", (e) => {
-        e.stopPropagation();
-        openPersonDialog(p);
-      });
-
-      const del = document.createElement("button");
-      del.className = "icon-btn";
-      del.type = "button";
-      del.title = "Löschen";
-      del.textContent = "🗑️";
-      del.addEventListener("click", (e) => {
-        e.stopPropagation();
-        deletePerson(p.id);
-      });
-
-      actions.appendChild(edit);
-      actions.appendChild(del);
-
-      item.appendChild(left);
-      item.appendChild(actions);
-
-      item.addEventListener("click", () => {
-        state.ui.activePersonId = p.id;
-        saveState();
-        renderAll();
-        closeSidebarOnMobile();
-      });
-
-      list.appendChild(item);
+    } else {
+      renderSection("Personen", persons);
+      const sep = document.createElement("div");
+      sep.className = "person-section-sep";
+      list.appendChild(sep);
+      renderSection("Gruppen / Institutionen", groups);
     }
 
     const ap = activePerson();
@@ -875,6 +935,13 @@
     const row = $("#weekdayRow");
     const labels = ["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"];
     row.innerHTML = "";
+
+    // KW header (left column)
+    const kw = document.createElement("div");
+    kw.className = "kwhead";
+    kw.textContent = "KW";
+    row.appendChild(kw);
+
     for (const l of labels) {
       const d = document.createElement("div");
       d.textContent = l;
@@ -911,16 +978,33 @@
     const today = isoToday();
     const ap = activePerson();
     const q = $("#searchInput").value;
+    const selWi = getISOWeekInfo(parseISODate(state.ui.selectedDay));
 
-    for (let i = 0; i < totalCells; i++) {
-      const d = new Date(startDate);
-      d.setDate(startDate.getDate() + i);
-      const iso = toISODateLocal(d);
-      const inMonth = d.getMonth() === m0;
+    // Render 6 week rows with KW numbers on the left
+    for (let w = 0; w < 6; w++) {
+      const monday = new Date(startDate);
+      monday.setDate(startDate.getDate() + (w * 7));
+      const wi = getISOWeekInfo(monday);
+      const isActiveWeek = (wi.week === selWi.week && wi.year === selWi.year);
 
-      const cell = document.createElement("div");
-      cell.className = "day" + (inMonth ? "" : " muted");
-      cell.tabIndex = 0;
+      const kwCell = document.createElement("div");
+      kwCell.className = "weeknum";
+      if (isActiveWeek) kwCell.classList.add("active-week");
+      kwCell.textContent = String(wi.week).padStart(2, "0");
+      kwCell.title = `Kalenderwoche ${wi.week}`;
+      grid.appendChild(kwCell);
+
+      for (let dIdx = 0; dIdx < 7; dIdx++) {
+        const i = (w * 7) + dIdx;
+        const d = new Date(startDate);
+        d.setDate(startDate.getDate() + i);
+        const iso = toISODateLocal(d);
+        const inMonth = d.getMonth() === m0;
+
+        const cell = document.createElement("div");
+        cell.className = "day" + (inMonth ? "" : " muted");
+        if (isActiveWeek) cell.classList.add("week-active");
+        cell.tabIndex = 0;
 
       if (iso === today) cell.classList.add("today");
       if (iso === state.ui.selectedDay) cell.classList.add("selected");
@@ -1030,7 +1114,8 @@
         }
       });
 
-      grid.appendChild(cell);
+        grid.appendChild(cell);
+      }
     }
 
     const selIso = state.ui.selectedDay;
@@ -1115,6 +1200,25 @@
       if (a.start !== b.start) return (a.start || "").localeCompare(b.start || "");
       return (b.priority ?? 0) - (a.priority ?? 0);
     });
+
+
+    // Empty state
+    if (tasks.length === 0) {
+      const msg = document.createElement("div");
+      msg.className = "tl-empty";
+      msg.style.gridColumn = `1 / span ${days + 1}`;
+      msg.style.gridRow = "2";
+      msg.textContent = "Keine aktiven Einträge im Zeitraum.";
+      grid.appendChild(msg);
+
+      if (printBox) {
+        const p = document.createElement("div");
+        p.className = "tiny muted";
+        p.textContent = "Keine aktiven Einträge (nächste 14 Tage).";
+        printBox.appendChild(p);
+      }
+      return;
+    }
 
     const maxRows = 12;
     const shown = tasks.slice(0, maxRows);
@@ -1245,6 +1349,7 @@
 function renderLists() {
     const ap = activePerson();
     const q = $("#searchInput").value;
+    const selWi = getISOWeekInfo(parseISODate(state.ui.selectedDay));
 
     $("#dayTasks").innerHTML = "";
     $("#listMilestones").innerHTML = "";
@@ -1348,33 +1453,33 @@ function renderLists() {
     const sub = document.createElement("div");
     sub.className = "task-sub";
 
-    const p1 = document.createElement("span");
-    p1.className = "pill";
-    const kIcon = (t.kind === "appointment") ? "🕒" : (t.kind === "milestone" ? "🏁" : "📅");
+    // Compact meta row (keeps the lists readable and avoids tall cards)
+    const pDate = document.createElement("span");
+    pDate.className = "pill";
+    const kIcon = (t.kind === "appointment") ? "🕒" : (t.kind === "milestone" ? "🏁" : "🧩");
     const time = taskTimeText(t);
-    p1.textContent = `${kIcon} ${taskRangeText(t)}${time ? " · " + time : ""}`;
+    pDate.textContent = `${kIcon} ${taskRangeText(t)}${time ? " · " + time : ""}`;
 
-    const p2 = document.createElement("span");
-    p2.className = "pill";
-    p2.textContent = `⚖️ ${priorityText(t.priority ?? 0)}`;
+    const pStatus = document.createElement("span");
+    pStatus.className = "pill";
+    pStatus.textContent = `🔖 ${statusText(t.status)}`;
 
-    const p3 = document.createElement("span");
-    p3.className = "pill";
-    p3.textContent = `🔁 ${repeatText(t.repeat)}`;
+    const pPrio = document.createElement("span");
+    pPrio.className = "pill";
+    pPrio.textContent = `⚖️ ${priorityText(t.priority ?? 0)}`;
 
-    const p4 = document.createElement("span");
-    p4.className = "pill";
-    p4.textContent = `🔖 ${statusText(t.status)}`;
+    sub.appendChild(pDate);
+    sub.appendChild(pStatus);
+    sub.appendChild(pPrio);
 
-    const pK = document.createElement("span");
-    pK.className = "pill";
-    pK.textContent = `🏷 ${taskKindText(t)}`;
-
-    sub.appendChild(p1);
-    sub.appendChild(p2);
-    sub.appendChild(p3);
-    sub.appendChild(p4);
-    sub.appendChild(pK);
+    if (t.repeat && t.repeat !== "none") {
+      const pRep = document.createElement("span");
+      pRep.className = "pill";
+      let rep = repeatText(t.repeat);
+      if (t.repeatUntil) rep += ` bis ${t.repeatUntil}`;
+      pRep.textContent = `🔁 ${rep}`;
+      sub.appendChild(pRep);
+    }
 
     const aCount = expandedAssigneePersonCount(t.assignees);
     if (aCount > 1) {
@@ -1522,14 +1627,6 @@ function renderLists() {
         if (String(state.ui.month || "").startsWith(String(y))) renderAll();
       });
     }
-
-    if (y && schoolYearLoaded !== y && schoolYearFetching !== y) {
-      ensureBerlinSchoolHolidays(y).then(() => {
-        if (String(state.ui.month || "").startsWith(String(y))) renderAll();
-      });
-    }
-
-    renderFerienBox(y, m0);
 
     // Desktop sidebar collapsed state
     document.body.classList.toggle("sidebar-collapsed", !!state.ui.sidebarCollapsed);
@@ -1698,6 +1795,7 @@ function renderLists() {
     $("#taskKind").value = task?.kind || "task";
     $("#taskPriority").value = String(task?.priority ?? 0);
     $("#taskRepeat").value = task?.repeat ?? "none";
+    $("#taskRepeatUntil").value = task?.repeatUntil || "";
     $("#taskNote").value = task?.note || "";
 
     let isBacklog = !!task?.isBacklog;
@@ -1723,6 +1821,7 @@ function renderLists() {
 
     syncKindInputs();
     syncDateInputs();
+    syncRepeatInputs();
     updateTaskHint();
     safeShowModal(taskDialog);
 
@@ -1743,6 +1842,27 @@ function renderLists() {
     $("#taskStart").disabled = isBacklog;
     $("#taskEnd").disabled = isBacklog || $("#taskKind").value !== "task";
   }
+
+  function syncRepeatInputs() {
+    const repeat = $("#taskRepeat").value;
+    const repeatUntilRaw = clampStr($("#taskRepeatUntil").value) || "";
+    const isBacklog = $("#taskIsBacklog").checked;
+
+    const row = $("#repeatUntilRow");
+    const show = repeat !== "none" && !isBacklog;
+    row.classList.toggle("show", show);
+
+    const inp = $("#taskRepeatUntil");
+    inp.disabled = !show;
+
+    // Keep input constraints in sync with chosen date
+    const start = $("#taskStart").value || isoToday();
+    inp.min = start;
+
+    // If the user picked an end before start, auto-correct to start
+    if (inp.value && inp.value < start) inp.value = start;
+  }
+
 
   function syncKindInputs() {
     const kind = $("#taskKind").value;
@@ -1813,12 +1933,13 @@ function renderLists() {
     const kind = $("#taskKind").value;
     const isBacklog = $("#taskIsBacklog").checked;
     const repeat = $("#taskRepeat").value;
+    const repeatUntilRaw = clampStr($("#taskRepeatUntil").value) || "";
     const prio = Number($("#taskPriority").value);
 
     if (isBacklog) {
       return {
         ok: true,
-        task: { title, kind: "task", assignees, isBacklog: true, start: null, end: null, timeStart: null, timeEnd: null, repeat, priority: prio, note: $("#taskNote").value }
+        task: { title, kind: "task", assignees, isBacklog: true, start: null, end: null, timeStart: null, timeEnd: null, repeat, repeatUntil: null, priority: prio, note: $("#taskNote").value }
       };
     }
 
@@ -1833,6 +1954,12 @@ function renderLists() {
     }
 
     if (end < start) return { ok: false, msg: "Enddatum muss am selben Tag oder nach dem Start liegen." };
+
+    let repeatUntil = null;
+    if (repeat !== "none" && repeatUntilRaw) {
+      if (repeatUntilRaw < start) return { ok: false, msg: "Wiederholung: Enddatum muss am selben Tag oder nach dem Start liegen." };
+      repeatUntil = repeatUntilRaw;
+    }
 
     let timeStart = null;
     let timeEnd = null;
@@ -1856,6 +1983,7 @@ function renderLists() {
         timeStart,
         timeEnd,
         repeat,
+        repeatUntil,
         priority: prio,
         note: $("#taskNote").value
       }
@@ -1872,6 +2000,7 @@ function renderLists() {
       t.kind = input.kind || "task";
       t.priority = Number(input.priority ?? 0);
       t.repeat = input.repeat ?? "none";
+      t.repeatUntil = input.repeatUntil || null;
       t.note = clampStr(input.note);
       t.assignees = Array.isArray(input.assignees) ? input.assignees.slice() : [];
 
@@ -1904,6 +2033,7 @@ function renderLists() {
         timeStart: input.timeStart || null,
         timeEnd: input.timeEnd || null,
         repeat: input.repeat ?? "none",
+        repeatUntil: input.repeatUntil || null,
         priority: Number(input.priority ?? 0),
         note: clampStr(input.note),
         status: input.isBacklog ? "backlog" : "planned",
@@ -1936,11 +2066,16 @@ function renderLists() {
 
   function markDone(t) {
     if (t.repeat && t.repeat !== "none" && !t.isBacklog) {
-      advanceRepeatingTask(t);
-      toast("Wiederholung: nächste Instanz geplant");
-      saveState();
-      renderAll();
-      return;
+      const advanced = advanceRepeatingTask(t);
+      if (advanced) {
+        toast("Wiederholung: nächste Instanz geplant");
+        saveState();
+        renderAll();
+        return;
+      }
+      // End reached: stop repeating and mark as done normally
+      t.repeat = "none";
+      t.repeatUntil = null;
     }
 
     t.status = "done";
@@ -2241,6 +2376,31 @@ function renderLists() {
 
   $("#btnExportOverview").addEventListener("click", () => exportOverviewCSV());
 
+  // Expand/collapse all right-side sections (details)
+  const toggleAllBtn = document.getElementById("btnToggleAllSections");
+  if (toggleAllBtn) {
+    const sectionEls = () => [...document.querySelectorAll(".lists-card details.section")];
+    const updateToggleAll = () => {
+      const els = sectionEls();
+      const allOpen = (els.length > 0) && els.every(d => d.open);
+      toggleAllBtn.textContent = allOpen ? "−" : "＋";
+      const label = allOpen ? "Alle Abschnitte einklappen" : "Alle Abschnitte ausklappen";
+      toggleAllBtn.title = label;
+      toggleAllBtn.setAttribute("aria-label", label);
+    };
+
+    toggleAllBtn.addEventListener("click", () => {
+      const els = sectionEls();
+      const allOpen = (els.length > 0) && els.every(d => d.open);
+      els.forEach(d => { d.open = !allOpen; });
+      updateToggleAll();
+    });
+
+    // Keep the button state in sync when the user toggles a single section
+    sectionEls().forEach(d => d.addEventListener("toggle", updateToggleAll));
+    updateToggleAll();
+  }
+
   $("#taskIsBacklog").addEventListener("change", () => {
     // If backlog is enabled, force kind to task (appointments/milestones need a date)
     if ($("#taskIsBacklog").checked) {
@@ -2250,6 +2410,7 @@ function renderLists() {
     }
     syncKindInputs();
     syncDateInputs();
+    syncRepeatInputs();
     updateTaskHint();
   });
 
@@ -2262,11 +2423,12 @@ function renderLists() {
     const s = $("#taskStart").value;
     if ($("#taskEnd").value && $("#taskEnd").value < s) $("#taskEnd").value = s;
     if ($("#taskKind").value !== "task") $("#taskEnd").value = s;
+    syncRepeatInputs();
     updateTaskHint();
   });
 
   $("#taskEnd").addEventListener("change", updateTaskHint);
-  $("#taskRepeat").addEventListener("change", updateTaskHint);
+  $("#taskRepeat").addEventListener("change", () => { syncRepeatInputs(); updateTaskHint(); });
 
   $("#taskDeleteBtn").addEventListener("click", () => {
     const id = $("#taskEditId").value;
@@ -2388,6 +2550,7 @@ function renderLists() {
   function updatePrintMeta() {
     const ap = activePerson();
     const q = $("#searchInput").value;
+    const selWi = getISOWeekInfo(parseISODate(state.ui.selectedDay));
     const d = new Date(state.ui.selectedDay);
     const dayLabel = d.toLocaleDateString("de-DE", { weekday: "long", year: "numeric", month: "long", day: "numeric" });
     const filter = q ? ` · Filter: „${q}“` : "";
@@ -2397,6 +2560,7 @@ function renderLists() {
   function renderAnalytics() {
     const ap = activePerson();
     const q = $("#searchInput").value;
+    const selWi = getISOWeekInfo(parseISODate(state.ui.selectedDay));
     const canvas = $("#chartWorkload");
     const statusBar = $("#statusBar");
     const legend = $("#statusLegend");
