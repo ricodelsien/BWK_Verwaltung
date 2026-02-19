@@ -1,16 +1,19 @@
 // script.js
 (() => {
+  "use strict";
   const APP = {
     name: "BWK-Aufgabenplanung",
-    version: "0.6.1",
-    buildDate: "2026-02-18",
+    version: "0.7",
+    buildDate: "2026-02-19",
     author: "Nico Siedler"
   };
 
+  const STORAGE_KEY_V3 = "bwk_aufgabenplanung_v3";
   const STORAGE_KEY_V2 = "bwk_aufgabenplanung_v2";
   const STORAGE_KEY_V1 = "bwk_aufgabenplanung_v1";
 
   const $ = (sel, el = document) => el.querySelector(sel);
+  const $$ = (sel, el = document) => [...el.querySelectorAll(sel)];
 
   const toastEl = $("#toast");
   let toastTimer = null;
@@ -29,6 +32,57 @@
   function clampStr(s) {
     return String(s ?? "").trim();
   }
+// Accent palette (shared with BWK-Stundenplan)
+const ACCENT_PRESETS = {
+  blue:   { dark: '#5c7da8', light: '#7fa2cc' },
+  green:  { dark: '#5b8f76', light: '#86b7a2' },
+  wine:   { dark: '#8a4a5b', light: '#c08b97' },
+  violet: { dark: '#6f5a8e', light: '#a99bc4' },
+  brown:  { dark: '#7a6455', light: '#b7a69a' },
+  mustard:{ dark: '#8a7a42', light: '#c2b26a' },
+};
+
+function systemPrefersLight(){
+  return window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches;
+}
+
+function effectiveIsLight(){
+  const t = state?.settings?.theme || 'system';
+  if(t === 'light') return true;
+  if(t === 'dark') return false;
+  return systemPrefersLight();
+}
+
+function hexToRgbParts(hex){
+  if(!hex || typeof hex !== 'string') return { r: 92, g: 125, b: 168 };
+  let h = hex.trim();
+  if(h.startsWith('#')) h = h.slice(1);
+  if(h.length === 3) h = h.split('').map(ch => ch+ch).join('');
+  const num = parseInt(h, 16);
+  if(Number.isNaN(num)) return { r: 92, g: 125, b: 168 };
+  return { r: (num >> 16) & 255, g: (num >> 8) & 255, b: num & 255 };
+}
+
+function accentHexFor(key){
+  const k = (key && ACCENT_PRESETS[key]) ? key : 'blue';
+  const preset = ACCENT_PRESETS[k] || ACCENT_PRESETS.blue;
+  return effectiveIsLight() ? preset.light : preset.dark;
+}
+
+function applyAccent(){
+  const key = (state?.settings?.accentKey && ACCENT_PRESETS[state.settings.accentKey]) ? state.settings.accentKey : 'blue';
+  const hex = accentHexFor(key);
+  const { r, g, b } = hexToRgbParts(hex);
+  document.documentElement.style.setProperty('--accent', hex);
+  document.documentElement.style.setProperty('--accent-rgb', `${r},${g},${b}`);
+}
+
+function applyUiTheme(){
+  const t = state?.settings?.theme || 'system';
+  if(t === 'system') document.documentElement.removeAttribute('data-theme');
+  else document.documentElement.setAttribute('data-theme', t);
+  applyAccent();
+}
 
   // --- People sorting (by surname) ---
   function personSortKey(name) {
@@ -234,7 +288,7 @@
     if (holidayYearFetching === year) return;
 
     const cacheKey = HOLI_CACHE_PREFIX + String(year);
-    const cached = safeParse(localStorage.getItem(cacheKey) || "");
+    const cached = safeJsonParse(localStorage.getItem(cacheKey) || "");
     if (cached && typeof cached === "object") {
       berlinHolidays = cached;
       holidayYearLoaded = year;
@@ -295,7 +349,7 @@
     if (schoolYearFetching === year) return;
 
     const cacheKey = SCHOOL_CACHE_PREFIX + String(year);
-    const cached = safeParse(localStorage.getItem(cacheKey) || "");
+    const cached = safeJsonParse(localStorage.getItem(cacheKey) || "");
     if (Array.isArray(cached)) {
       berlinSchoolHolidays = cached;
       schoolYearLoaded = year;
@@ -344,7 +398,7 @@
     }
   }
 
-  function safeParse(json) {
+  function safeJsonParse(json) {
     try {
       return JSON.parse(json);
     } catch {
@@ -371,12 +425,76 @@
     };
   }
 
+function defaultStateV3() {
+  const today = isoToday();
+  const bid = uid();
+  return {
+    version: 3,
+    boards: {
+      [bid]: { id: bid, name: "Allgemein", createdAt: new Date().toISOString() }
+    },
+    people: [],
+    tasks: [],
+    settings: {
+      activeBoardId: bid,
+      activePersonId: null,
+      month: today.slice(0, 7),
+      selectedDay: today,
+      sidebarOpen: false,
+      sidebarCollapsed: false,
+      theme: "system",
+      accentKey: "blue"
+    },
+    updatedAt: null
+  };
+}
+
+function normalizeBoard(b) {
+  b.id ??= uid();
+  b.name = clampStr(b.name) || "Allgemein";
+  b.createdAt ??= new Date().toISOString();
+  return b;
+}
+
+function migrateV2ToV3(v2) {
+  const v3 = defaultStateV3();
+
+  // boards: single default board
+  const bid = Object.keys(v3.boards)[0];
+  v3.settings.activeBoardId = bid;
+
+  // settings: map ui -> settings
+  const ui = v2.ui || {};
+  v3.settings.activePersonId = ui.activePersonId || null;
+  v3.settings.month = ui.month || v3.settings.month;
+  v3.settings.selectedDay = ui.selectedDay || v3.settings.selectedDay;
+  v3.settings.sidebarOpen = !!ui.sidebarOpen;
+  v3.settings.sidebarCollapsed = !!ui.sidebarCollapsed;
+  v3.settings.theme = ui.theme || "system";
+  v3.settings.accentKey = ui.accent || "blue";
+
+  // people/tasks
+  v3.people = (v2.people || []).map(p => normalizePerson(p));
+  v3.tasks = (v2.tasks || []).map(t => {
+    const nt = normalizeTask(t);
+    nt.boardId = clampStr(nt.boardId) || bid;
+    return nt;
+  });
+
+  // timestamps
+  v3.updatedAt = v2.lastSavedAt ?? null;
+
+  return v3;
+}
+
+
   function normalizePerson(p) {
     p.id ??= uid();
     p.name = clampStr(p.name) || "Unbenannt";
     p.type = clampStr(p.type) || "person";
     if (!["person", "group"].includes(p.type)) p.type = "person";
     p.role = clampStr(p.role) || "";
+    p.dept = clampStr(p.dept) || "";
     p.members = Array.isArray(p.members) ? p.members.filter(Boolean) : [];
     if (p.type !== "group") p.members = [];
     p.createdAt ??= new Date().toISOString();
@@ -390,7 +508,9 @@
     t.priority = Number(t.priority ?? 0);
     t.repeat ??= "none";
 
+    t.boardId = clampStr(t.boardId) || null;
     t.repeatUntil = clampStr(t.repeatUntil) || null;
+    if (t.repeatUntil && !/^\d{4}-\d{2}-\d{2}$/.test(t.repeatUntil)) t.repeatUntil = null;
 
     // Type: task | appointment | milestone
     t.kind ??= "task";
@@ -420,14 +540,6 @@
       }
 
       t.status ??= "planned";
-    }
-
-        // Repeat end handling
-    if (t.isBacklog || t.repeat === "none") {
-      t.repeatUntil = null;
-    } else if (t.repeatUntil && t.repeatUntil < t.start) {
-      // Defensive: invalid end before start
-      t.repeatUntil = t.start;
     }
 
     t.assignees = Array.isArray(t.assignees) ? t.assignees.filter(Boolean) : [];
@@ -482,48 +594,109 @@
     return v2;
   }
 
-  function loadState() {
-    const rawV2 = localStorage.getItem(STORAGE_KEY_V2);
-    if (rawV2) {
-      const parsed = safeParse(rawV2);
-      if (parsed?.version === 2 && Array.isArray(parsed.people) && Array.isArray(parsed.tasks)) {
+  
+function loadState() {
+    // v3 (current)
+    const rawV3 = localStorage.getItem(STORAGE_KEY_V3);
+    if (rawV3) {
+      const parsed = safeJsonParse(rawV3);
+      if (parsed?.version === 3 && parsed && typeof parsed === 'object') {
         const s = parsed;
-        s.ui ??= defaultStateV2().ui;
-      s.ui.theme ??= "system";
-      s.ui.accent ??= "blue";
+
+        // base shape
+        s.boards = s.boards && typeof s.boards === 'object' ? s.boards : {};
+        s.people = Array.isArray(s.people) ? s.people : [];
+        s.tasks = Array.isArray(s.tasks) ? s.tasks : [];
+        s.settings = s.settings && typeof s.settings === 'object' ? s.settings : {};
+
+        // normalize boards
+        for (const [id, b] of Object.entries(s.boards)) {
+          if (!b || typeof b !== 'object') delete s.boards[id];
+          else s.boards[id] = normalizeBoard(b);
+        }
+        if (Object.keys(s.boards).length === 0) {
+          const fresh = defaultStateV3();
+          s.boards = fresh.boards;
+          s.settings.activeBoardId = Object.keys(s.boards)[0];
+        }
+
+        // normalize people/tasks
         s.people = s.people.map(p => normalizePerson(p));
         s.tasks = s.tasks.map(t => normalizeTask(t));
-        s.lastSavedAt ??= null;
+
+        // settings defaults
+        const d = defaultStateV3();
+        s.settings.theme ??= d.settings.theme;
+        s.settings.accentKey ??= (s.settings.accentKey || s.settings.accent || d.settings.accentKey);
+        delete s.settings.accent;
+
+        s.settings.sidebarOpen ??= d.settings.sidebarOpen;
+        s.settings.sidebarCollapsed ??= d.settings.sidebarCollapsed;
+
+        s.settings.selectedDay ??= d.settings.selectedDay;
+        s.settings.month ??= (s.settings.selectedDay ? String(s.settings.selectedDay).slice(0,7) : d.settings.month);
+
+        // active board/person sanity
+        if (!s.settings.activeBoardId || !s.boards[s.settings.activeBoardId]) {
+          s.settings.activeBoardId = Object.keys(s.boards)[0];
+        }
+        if (s.settings.activePersonId && !s.people.some(p => p.id === s.settings.activePersonId)) {
+          s.settings.activePersonId = s.people[0]?.id ?? null;
+        }
+
+        // task board sanity
+        const bid = s.settings.activeBoardId;
+        for (const t of s.tasks) {
+          if (!t.boardId || !s.boards[t.boardId]) t.boardId = bid;
+        }
+
+        s.updatedAt ??= s.lastSavedAt ?? null;
+        delete s.lastSavedAt;
+
         return s;
       }
     }
 
-    const rawV1 = localStorage.getItem(STORAGE_KEY_V1);
-    if (rawV1) {
-      const parsed = safeParse(rawV1);
-      if (parsed?.version === 1 && Array.isArray(parsed.people)) {
-        const migrated = migrateV1ToV2(parsed);
-        // Persist into v2 key immediately
-        try {
-          localStorage.setItem(STORAGE_KEY_V2, JSON.stringify(migrated));
-        } catch {
-          // ignore
-        }
+    // v2 -> v3 migration
+    const rawV2 = localStorage.getItem(STORAGE_KEY_V2);
+    if (rawV2) {
+      const parsed = safeJsonParse(rawV2);
+      if (parsed?.version === 2 && Array.isArray(parsed.people) && Array.isArray(parsed.tasks)) {
+        const migrated = migrateV2ToV3(parsed);
+        try { localStorage.setItem(STORAGE_KEY_V3, JSON.stringify(migrated)); } catch {}
         return migrated;
       }
     }
 
-    return defaultStateV2();
+    // v1 -> v2 -> v3
+    const rawV1 = localStorage.getItem(STORAGE_KEY_V1);
+    if (rawV1) {
+      const parsed = safeJsonParse(rawV1);
+      if (parsed?.version === 1 && Array.isArray(parsed.people)) {
+        const v2 = migrateV1ToV2(parsed);
+        const v3 = migrateV2ToV3(v2);
+        try {
+          localStorage.setItem(STORAGE_KEY_V2, JSON.stringify(v2));
+          localStorage.setItem(STORAGE_KEY_V3, JSON.stringify(v3));
+        } catch {}
+        return v3;
+      }
+    }
+
+    return defaultStateV3();
   }
 
   let state = loadState();
-  let pendingImport = null;
-  let saveTimer = null;
+  const view = {
+    pendingImport: null,
+    saveTimer: null,
+    renderQueued: false
+  };
 
   function saveState(debounced = true) {
     const write = () => {
-      state.lastSavedAt = new Date().toISOString();
-      localStorage.setItem(STORAGE_KEY_V2, JSON.stringify(state));
+      state.updatedAt = new Date().toISOString();
+      localStorage.setItem(STORAGE_KEY_V3, JSON.stringify(state));
       updateSaveInfo();
     };
 
@@ -532,12 +705,97 @@
       return;
     }
 
-    clearTimeout(saveTimer);
-    saveTimer = setTimeout(write, 120);
+    clearTimeout(view.saveTimer);
+    view.saveTimer = setTimeout(write, 250);
   }
 
   function activePerson() {
-    return state.people.find(p => p.id === state.ui.activePersonId) || null;
+    return state.people.find(p => p.id === state.settings.activePersonId) || null;
+  }
+  function activeBoardId(){
+    return state.settings.activeBoardId;
+  }
+
+  function activeBoard(){
+    return (state.boards && state.boards[activeBoardId()]) ? state.boards[activeBoardId()] : null;
+  }
+
+  function sortedBoards(){
+    const arr = Object.values(state.boards || {});
+    arr.sort((a, b) => (a.name || "").localeCompare(b.name || "", "de", { sensitivity: "base" }));
+    return arr;
+  }
+
+  function renderBoardSelect(){
+    const sel = $("#boardSelect");
+    if (!sel) return;
+
+    const boards = sortedBoards();
+    const active = activeBoardId() || boards[0]?.id || null;
+
+    sel.innerHTML = "";
+    for (const b of boards) {
+      const opt = document.createElement("option");
+      opt.value = b.id;
+      opt.textContent = b.name;
+      sel.appendChild(opt);
+    }
+    if (active) sel.value = active;
+  }
+
+  function addBoard(){
+    const name = clampStr(prompt("Neuer Bereich / Board:", "Neuer Bereich"));
+    if(!name) return;
+
+    const id = uid();
+    state.boards[id] = normalizeBoard({ id, name });
+    state.settings.activeBoardId = id;
+
+    saveState();
+    renderAll();
+    toast("Bereich hinzugefügt");
+  }
+
+  function renameActiveBoard(){
+    const b = activeBoard();
+    if(!b) return;
+    const name = clampStr(prompt("Bereich umbenennen:", b.name));
+    if(!name) return;
+    b.name = name;
+    saveState();
+    renderAll();
+    toast("Bereich umbenannt");
+  }
+
+  function deleteActiveBoard(){
+    const b = activeBoard();
+    const boards = sortedBoards();
+    if(!b) return;
+    if(boards.length <= 1){
+      toast("Mindestens ein Bereich muss bleiben.");
+      return;
+    }
+
+    const ok = confirm(`Bereich „${b.name}“ entfernen?
+
+Aufgaben werden in einen anderen Bereich verschoben.`);
+    if(!ok) return;
+
+    // pick fallback (first different board)
+    const fallback = boards.find(x => x.id !== b.id);
+    const fallbackId = fallback?.id || boards[0].id;
+
+    // move tasks
+    for (const t of state.tasks) {
+      if (t.boardId === b.id) t.boardId = fallbackId;
+    }
+
+    delete state.boards[b.id];
+    state.settings.activeBoardId = fallbackId;
+
+    saveState();
+    renderAll();
+    toast("Bereich entfernt");
   }
 
   function personNameById(id) {
@@ -610,8 +868,9 @@
 
   function tasksForPerson(personId) {
     const ids = new Set(effectiveAssigneeIdsForView(personId));
+    const bid = activeBoardId();
     return state.tasks.filter(t =>
-      Array.isArray(t.assignees) && t.assignees.some(a => ids.has(a))
+      t.boardId === bid && Array.isArray(t.assignees) && t.assignees.some(a => ids.has(a))
     );
   }
 
@@ -749,8 +1008,11 @@
 
     const newStart = nextRepeatStart(start, t.repeat);
 
-    const until = t.repeatUntil;
-    if (until && newStart > until) return false;
+    // stop repeating when an explicit end is reached
+    if (t.repeatUntil && /^\d{4}-\d{2}-\d{2}$/.test(t.repeatUntil)) {
+      if (newStart > t.repeatUntil) return false;
+    }
+
     const newEnd = addDaysISO(newStart, durDays);
 
     t.start = newStart;
@@ -764,29 +1026,49 @@
     const saveEl = $("#saveInfo");
     const appEl = $("#appInfo");
 
-    if (!state.lastSavedAt) {
+    if (!state.updatedAt) {
       saveEl.textContent = "Noch nicht gespeichert";
     } else {
-      const d = new Date(state.lastSavedAt);
+      const d = new Date(state.updatedAt);
       saveEl.textContent = `Zuletzt gespeichert: ${d.toLocaleString("de-DE")}`;
     }
 
     appEl.textContent = `${APP.name} v${APP.version} • ${APP.author} • ${APP.buildDate} • 💾 speichert im Browser (localStorage)`;
   }
 
-  function ensureFirstRun() {
-    const hasPeople = state.people.length > 0;
+  
+function ensureFirstRun() {
+    // boards & settings sanity (v3)
+    state.boards = state.boards && typeof state.boards === "object" ? state.boards : {};
+    state.settings = state.settings && typeof state.settings === "object" ? state.settings : {};
+    if (Object.keys(state.boards).length === 0) {
+      const fresh = defaultStateV3();
+      state.boards = fresh.boards;
+    }
+    if (!state.settings.activeBoardId || !state.boards[state.settings.activeBoardId]) {
+      state.settings.activeBoardId = Object.keys(state.boards)[0];
+    }
+    state.settings.accentKey ??= state.settings.accent ?? "blue";
+    delete state.settings.accent;
+    state.settings.theme ??= "system";
 
+    // task board sanity
+    const bid = state.settings.activeBoardId;
+    for (const t of state.tasks) {
+      if (!t.boardId || !state.boards[t.boardId]) t.boardId = bid;
+    }
+
+    const hasPeople = state.people.length > 0;
     // No forced prompt on first run. Instead: keep UI usable and guide when user acts.
     $("#btnAddTask").disabled = !hasPeople;
 
     if (!hasPeople) {
-      state.ui.activePersonId = null;
+      state.settings.activePersonId = null;
       return;
     }
 
-    if (!state.ui.activePersonId || !activePerson()) {
-      state.ui.activePersonId = sortedPeople()[0]?.id ?? state.people[0].id;
+    if (!state.settings.activePersonId || !activePerson()) {
+      state.settings.activePersonId = sortedPeople()[0]?.id ?? state.people[0].id;
     }
   }
 
@@ -816,7 +1098,7 @@
       }
 
       for (const p of items) {
-        const isActive = p.id === state.ui.activePersonId;
+        const isActive = p.id === state.settings.activePersonId;
         const counts = countBuckets(p.id, q);
 
         const item = document.createElement("div");
@@ -844,7 +1126,7 @@
 
         const role = document.createElement("div");
         role.className = "person-role";
-        role.textContent = `${p.type === "group" ? "Gruppe" : "Person"}${p.role ? " · " + p.role : ""}`;
+        role.textContent = `${p.type === "group" ? "Gruppe" : "Person"}${p.role ? " · " + p.role : ""}${(p.type==="person" && p.dept) ? " · " + p.dept : ""}`;
 
         const stats = document.createElement("div");
         stats.className = "person-stats";
@@ -903,7 +1185,7 @@
         item.appendChild(actions);
 
         item.addEventListener("click", () => {
-          state.ui.activePersonId = p.id;
+          state.settings.activePersonId = p.id;
           saveState();
           renderAll();
           closeSidebarOnMobile();
@@ -955,7 +1237,7 @@
     const grid = $("#calendarGrid");
     grid.innerHTML = "";
 
-    const [yStr, mStr] = state.ui.month.split("-");
+    const [yStr, mStr] = state.settings.month.split("-");
     const y = Number(yStr);
     const m0 = Number(mStr) - 1;
 
@@ -963,9 +1245,9 @@
 
     // sync jump inputs
     const jm = $("#jumpMonth");
-    if (jm) jm.value = state.ui.month;
+    if (jm) jm.value = state.settings.month;
     const jw = $("#jumpWeek");
-    if (jw) jw.value = toWeekInputValue(state.ui.selectedDay);
+    if (jw) jw.value = toWeekInputValue(state.settings.selectedDay);
 
 
     const firstOfMonth = new Date(y, m0, 1);
@@ -978,7 +1260,7 @@
     const today = isoToday();
     const ap = activePerson();
     const q = $("#searchInput").value;
-    const selWi = getISOWeekInfo(parseISODate(state.ui.selectedDay));
+    const selWi = getISOWeekInfo(parseISODate(state.settings.selectedDay));
 
     // Render 6 week rows with KW numbers on the left
     for (let w = 0; w < 6; w++) {
@@ -1007,7 +1289,7 @@
         cell.tabIndex = 0;
 
       if (iso === today) cell.classList.add("today");
-      if (iso === state.ui.selectedDay) cell.classList.add("selected");
+      if (iso === state.settings.selectedDay) cell.classList.add("selected");
 
       const holName = berlinHolidays?.[iso];
       if (holName) {
@@ -1042,16 +1324,16 @@
       }
 
       const pick = () => {
-        state.ui.selectedDay = iso;
-        state.ui.month = iso.slice(0, 7);
+        state.settings.selectedDay = iso;
+        state.settings.month = iso.slice(0, 7);
         saveState();
         renderAll();
       };
 
       const openNewOnThisDay = () => {
         // Keep selection in sync
-        state.ui.selectedDay = iso;
-        state.ui.month = iso.slice(0, 7);
+        state.settings.selectedDay = iso;
+        state.settings.month = iso.slice(0, 7);
         saveState();
         renderAll();
         openTaskDialog(null, { prefillDate: iso });
@@ -1098,9 +1380,9 @@
         e.preventDefault();
         cell.classList.remove("dragover");
 
-        state.ui.activePersonId = pid;
-        state.ui.selectedDay = iso;
-        state.ui.month = iso.slice(0, 7);
+        state.settings.activePersonId = pid;
+        state.settings.selectedDay = iso;
+        state.settings.month = iso.slice(0, 7);
         saveState();
         renderAll();
         openTaskDialog(null, { prefillDate: iso, prefillAssignees: [pid] });
@@ -1118,7 +1400,7 @@
       }
     }
 
-    const selIso = state.ui.selectedDay;
+    const selIso = state.settings.selectedDay;
     const hol = berlinHolidays?.[selIso];
     const holTxt = hol ? ` · Feiertag: ${hol}` : "";
     $("#selectedDayLabel").textContent =
@@ -1142,7 +1424,7 @@
     }
 
     const q = $("#searchInput").value;
-    const rangeStart = startOfWeekISO(state.ui.selectedDay);
+    const rangeStart = startOfWeekISO(state.settings.selectedDay);
     const days = 14;
     const rangeEnd = addDaysISO(rangeStart, days - 1);
 
@@ -1162,7 +1444,7 @@
 
     // Header days
     const today = isoToday();
-    const selected = state.ui.selectedDay;
+    const selected = state.settings.selectedDay;
 
     for (let i = 0; i < days; i++) {
       const iso = addDaysISO(rangeStart, i);
@@ -1177,8 +1459,8 @@
       cell.textContent = dayTxt.replace(".", "");
       cell.title = d.toLocaleDateString("de-DE", { weekday: "long", year: "numeric", month: "long", day: "numeric" });
       cell.addEventListener("click", () => {
-        state.ui.selectedDay = iso;
-        state.ui.month = iso.slice(0, 7);
+        state.settings.selectedDay = iso;
+        state.settings.month = iso.slice(0, 7);
         saveState();
         renderAll();
       });
@@ -1290,7 +1572,7 @@
 
     const q = $("#searchInput").value;
 
-    const rangeStart = state.ui.selectedDay;
+    const rangeStart = state.settings.selectedDay;
     const rangeEnd = addDaysISO(rangeStart, 89); // next ~90 days from selected day
 
     const tasks = tasksForPerson(ap.id)
@@ -1349,7 +1631,7 @@
 function renderLists() {
     const ap = activePerson();
     const q = $("#searchInput").value;
-    const selWi = getISOWeekInfo(parseISODate(state.ui.selectedDay));
+    const selWi = getISOWeekInfo(parseISODate(state.settings.selectedDay));
 
     $("#dayTasks").innerHTML = "";
     $("#listMilestones").innerHTML = "";
@@ -1384,7 +1666,7 @@ function renderLists() {
       for (const t of ms) $("#listMilestones").appendChild(taskRow(t));
     }
 
-    const todays = tasksForDay(ap.id, state.ui.selectedDay, q);
+    const todays = tasksForDay(ap.id, state.settings.selectedDay, q);
     $("#countDay").textContent = todays.length;
 
     if (todays.length === 0) {
@@ -1453,33 +1735,33 @@ function renderLists() {
     const sub = document.createElement("div");
     sub.className = "task-sub";
 
-    // Compact meta row (keeps the lists readable and avoids tall cards)
-    const pDate = document.createElement("span");
-    pDate.className = "pill";
-    const kIcon = (t.kind === "appointment") ? "🕒" : (t.kind === "milestone" ? "🏁" : "🧩");
+    const p1 = document.createElement("span");
+    p1.className = "pill";
+    const kIcon = (t.kind === "appointment") ? "🕒" : (t.kind === "milestone" ? "🏁" : "📅");
     const time = taskTimeText(t);
-    pDate.textContent = `${kIcon} ${taskRangeText(t)}${time ? " · " + time : ""}`;
+    p1.textContent = `${kIcon} ${taskRangeText(t)}${time ? " · " + time : ""}`;
 
-    const pStatus = document.createElement("span");
-    pStatus.className = "pill";
-    pStatus.textContent = `🔖 ${statusText(t.status)}`;
+    const p2 = document.createElement("span");
+    p2.className = "pill";
+    p2.textContent = `⚖️ ${priorityText(t.priority ?? 0)}`;
 
-    const pPrio = document.createElement("span");
-    pPrio.className = "pill";
-    pPrio.textContent = `⚖️ ${priorityText(t.priority ?? 0)}`;
+    const p3 = document.createElement("span");
+    p3.className = "pill";
+    p3.textContent = `🔁 ${repeatText(t.repeat)}`;
 
-    sub.appendChild(pDate);
-    sub.appendChild(pStatus);
-    sub.appendChild(pPrio);
+    const p4 = document.createElement("span");
+    p4.className = "pill";
+    p4.textContent = `🔖 ${statusText(t.status)}`;
 
-    if (t.repeat && t.repeat !== "none") {
-      const pRep = document.createElement("span");
-      pRep.className = "pill";
-      let rep = repeatText(t.repeat);
-      if (t.repeatUntil) rep += ` bis ${t.repeatUntil}`;
-      pRep.textContent = `🔁 ${rep}`;
-      sub.appendChild(pRep);
-    }
+    const pK = document.createElement("span");
+    pK.className = "pill";
+    pK.textContent = `🏷 ${taskKindText(t)}`;
+
+    sub.appendChild(p1);
+    sub.appendChild(p2);
+    sub.appendChild(p3);
+    sub.appendChild(p4);
+    sub.appendChild(pK);
 
     const aCount = expandedAssigneePersonCount(t.assignees);
     if (aCount > 1) {
@@ -1606,6 +1888,7 @@ function renderLists() {
 
   function renderAll() {
     ensureFirstRun();
+    renderBoardSelect();
     renderSidebar();
     renderWeekdays();
     renderCalendar();
@@ -1617,22 +1900,22 @@ function renderLists() {
     updateSaveInfo();
 
     // Load holidays/ferien in the background (no blocking). When available, we re-render once.
-    const [yStr, mStr] = String(state.ui.month || isoToday().slice(0, 7)).split("-");
+    const [yStr, mStr] = String(state.settings.month || isoToday().slice(0, 7)).split("-");
     const y = Number(yStr);
     const m0 = Math.max(0, Number(mStr) - 1);
 
     if (y && holidayYearLoaded !== y && holidayYearFetching !== y) {
       ensureBerlinHolidays(y).then(() => {
         // Only re-render if we're still on the same year
-        if (String(state.ui.month || "").startsWith(String(y))) renderAll();
+        if (String(state.settings.month || "").startsWith(String(y))) renderAll();
       });
     }
 
     // Desktop sidebar collapsed state
-    document.body.classList.toggle("sidebar-collapsed", !!state.ui.sidebarCollapsed);
+    document.body.classList.toggle("sidebar-collapsed", !!state.settings.sidebarCollapsed);
 
     // Mobile sidebar open state
-    $("#sidebar").classList.toggle("open", !!state.ui.sidebarOpen);
+    $("#sidebar").classList.toggle("open", !!state.settings.sidebarOpen);
   }
 
   // ---------- Person CRUD ----------
@@ -1683,6 +1966,7 @@ function renderLists() {
     $("#personName").value = person?.name || "";
     $("#personType").value = person?.type || "person";
     $("#personRole").value = person?.role || "";
+    $("#personDept").value = person?.dept || "";
     renderGroupMembersPicker(person?.members || [], person?.id || null);
     updateGroupMembersVisibility();
 
@@ -1696,6 +1980,7 @@ function renderLists() {
 
     const type = (data?.type === "group") ? "group" : "person";
     const role = clampStr(data?.role) || "";
+    const dept = clampStr(data?.dept) || "";
     const rawMembers = Array.isArray(data?.members) ? data.members.filter(Boolean) : [];
 
     const validIds = new Set(state.people.map(p => p.id));
@@ -1707,13 +1992,14 @@ function renderLists() {
         p.name = clean;
         p.type = type;
         p.role = role;
+        p.dept = (type === "person") ? dept : "";
         p.members = (type === "group") ? members.filter(mid => mid !== id) : [];
       }
     } else {
-      const p = normalizePerson({ id: uid(), name: clean, type, role, members, createdAt: new Date().toISOString() });
+      const p = normalizePerson({ id: uid(), name: clean, type, role, dept: (type==="person") ? dept : "", members, createdAt: new Date().toISOString() });
       p.members = (p.type === "group") ? p.members.filter(mid => mid !== p.id) : [];
       state.people.unshift(p);
-      state.ui.activePersonId = p.id;
+      state.settings.activePersonId = p.id;
     }
 
     saveState();
@@ -1745,9 +2031,9 @@ function renderLists() {
       .filter(t => (t.assignees || []).length > 0);
 
     if (state.people.length > 0) {
-      state.ui.activePersonId = state.people[0].id;
+      state.settings.activePersonId = state.people[0].id;
     } else {
-      state.ui.activePersonId = null;
+      state.settings.activePersonId = null;
     }
 
     saveState(false);
@@ -1789,7 +2075,7 @@ function renderLists() {
     $("#taskEditId").value = task?.id || "";
     $("#taskDialogTitle").textContent = isEdit ? "Aufgabe bearbeiten" : "Aufgabe hinzufügen";
 
-    const prefillDate = opts.prefillDate || state.ui.selectedDay || isoToday();
+    const prefillDate = opts.prefillDate || state.settings.selectedDay || isoToday();
 
     $("#taskTitle").value = task?.title || "";
     $("#taskKind").value = task?.kind || "task";
@@ -1821,7 +2107,6 @@ function renderLists() {
 
     syncKindInputs();
     syncDateInputs();
-    syncRepeatInputs();
     updateTaskHint();
     safeShowModal(taskDialog);
 
@@ -1835,34 +2120,33 @@ function renderLists() {
       }
     }, 60);
   }
-
   function syncDateInputs() {
-    const isBacklog = $("#taskIsBacklog").checked;
-    $("#dateRow").style.opacity = isBacklog ? ".45" : "1";
-    $("#taskStart").disabled = isBacklog;
-    $("#taskEnd").disabled = isBacklog || $("#taskKind").value !== "task";
+  const isBacklog = $("#taskIsBacklog").checked;
+  $("#dateRow").style.opacity = isBacklog ? ".45" : "1";
+  $("#taskStart").disabled = isBacklog;
+  $("#taskEnd").disabled = isBacklog || $("#taskKind").value !== "task";
+
+  // Repeat end (only if repeating and scheduled)
+  const repRow = $("#repeatUntilRow");
+  const repUntil = $("#taskRepeatUntil");
+  const rep = $("#taskRepeat").value;
+  const showRep = (!isBacklog && rep && rep !== "none");
+  if (repRow) repRow.hidden = !showRep;
+
+  if (!showRep) {
+    if (repUntil) repUntil.value = "";
+  } else {
+    if (repUntil && !repUntil.value) {
+      const s = $("#taskStart").value || isoToday();
+      let def = s;
+      if (rep === "daily") def = addDaysISO(s, 30);
+      if (rep === "weekly") def = addDaysISO(s, 90);
+      if (rep === "monthly") def = addDaysISO(s, 365);
+      repUntil.value = def;
+    }
   }
 
-  function syncRepeatInputs() {
-    const repeat = $("#taskRepeat").value;
-    const repeatUntilRaw = clampStr($("#taskRepeatUntil").value) || "";
-    const isBacklog = $("#taskIsBacklog").checked;
-
-    const row = $("#repeatUntilRow");
-    const show = repeat !== "none" && !isBacklog;
-    row.classList.toggle("show", show);
-
-    const inp = $("#taskRepeatUntil");
-    inp.disabled = !show;
-
-    // Keep input constraints in sync with chosen date
-    const start = $("#taskStart").value || isoToday();
-    inp.min = start;
-
-    // If the user picked an end before start, auto-correct to start
-    if (inp.value && inp.value < start) inp.value = start;
   }
-
 
   function syncKindInputs() {
     const kind = $("#taskKind").value;
@@ -1933,13 +2217,13 @@ function renderLists() {
     const kind = $("#taskKind").value;
     const isBacklog = $("#taskIsBacklog").checked;
     const repeat = $("#taskRepeat").value;
-    const repeatUntilRaw = clampStr($("#taskRepeatUntil").value) || "";
     const prio = Number($("#taskPriority").value);
+    const repeatUntilInput = $("#taskRepeatUntil");
 
     if (isBacklog) {
       return {
         ok: true,
-        task: { title, kind: "task", assignees, isBacklog: true, start: null, end: null, timeStart: null, timeEnd: null, repeat, repeatUntil: null, priority: prio, note: $("#taskNote").value }
+        task: { title, kind: "task", assignees, isBacklog: true, start: null, end: null, timeStart: null, timeEnd: null, repeat: "none", repeatUntil: null, priority: prio, note: $("#taskNote").value }
       };
     }
 
@@ -1955,12 +2239,6 @@ function renderLists() {
 
     if (end < start) return { ok: false, msg: "Enddatum muss am selben Tag oder nach dem Start liegen." };
 
-    let repeatUntil = null;
-    if (repeat !== "none" && repeatUntilRaw) {
-      if (repeatUntilRaw < start) return { ok: false, msg: "Wiederholung: Enddatum muss am selben Tag oder nach dem Start liegen." };
-      repeatUntil = repeatUntilRaw;
-    }
-
     let timeStart = null;
     let timeEnd = null;
     if (kind === "appointment") {
@@ -1969,6 +2247,13 @@ function renderLists() {
       if (timeStart && timeEnd && timeEnd < timeStart) {
         return { ok: false, msg: "Uhrzeit: 'Bis' muss nach 'Von' liegen." };
       }
+    }
+
+    let repeatUntil = null;
+    if (repeat && repeat !== "none") {
+      repeatUntil = (repeatUntilInput && repeatUntilInput.value) ? repeatUntilInput.value : null;
+      if (!repeatUntil) return { ok: false, msg: "Bitte ein Ende für die Wiederholung setzen." };
+      if (repeatUntil < start) return { ok: false, msg: "Wiederholen bis muss am selben Tag oder nach dem Start liegen." };
     }
 
     return {
@@ -2000,7 +2285,7 @@ function renderLists() {
       t.kind = input.kind || "task";
       t.priority = Number(input.priority ?? 0);
       t.repeat = input.repeat ?? "none";
-      t.repeatUntil = input.repeatUntil || null;
+      t.repeatUntil = (t.repeat && t.repeat !== "none") ? (input.repeatUntil || null) : null;
       t.note = clampStr(input.note);
       t.assignees = Array.isArray(input.assignees) ? input.assignees.slice() : [];
 
@@ -2013,6 +2298,8 @@ function renderLists() {
         t.end = null;
         t.timeStart = null;
         t.timeEnd = null;
+        t.repeat = "none";
+        t.repeatUntil = null;
         if (t.status !== "done") t.status = "backlog";
       } else {
         t.start = input.start;
@@ -2032,8 +2319,9 @@ function renderLists() {
         end: input.isBacklog ? null : (input.end || input.start),
         timeStart: input.timeStart || null,
         timeEnd: input.timeEnd || null,
+        boardId: activeBoardId(),
         repeat: input.repeat ?? "none",
-        repeatUntil: input.repeatUntil || null,
+        repeatUntil: (input.repeat && input.repeat !== "none") ? (input.repeatUntil || null) : null,
         priority: Number(input.priority ?? 0),
         note: clampStr(input.note),
         status: input.isBacklog ? "backlog" : "planned",
@@ -2073,7 +2361,7 @@ function renderLists() {
         renderAll();
         return;
       }
-      // End reached: stop repeating and mark as done normally
+      // reached repeat end -> finish normally
       t.repeat = "none";
       t.repeatUntil = null;
     }
@@ -2176,98 +2464,196 @@ function renderLists() {
     }
 
     const date = isoToday();
-    downloadText(lines.join("\n"), `BWK-Aufgabenplanung_Uebersicht_${fileSlug(ap.name)}_${date}.csv`, "text/csv");
+    const b = activeBoard();
+    const bs = b ? fileSlug(b.name) : "bereich";
+    downloadText(lines.join("\n"), `BWK-Aufgabenplanung_Uebersicht_${bs}_${fileSlug(ap.name)}_${date}.csv`, "text/csv");
     toast("Übersicht exportiert");
   }
 
   const importDialog = $("#importDialog");
 
   function openImportChoice(imported) {
-    pendingImport = imported;
+    view.pendingImport = imported;
     safeShowModal(importDialog);
   }
 
-  function normalizeIncomingToV2(obj) {
-    if (!obj) return null;
-    if (obj.version === 2 && Array.isArray(obj.people) && Array.isArray(obj.tasks)) {
-      const s = obj;
-      s.ui ??= defaultStateV2().ui;
-      s.ui.theme ??= "system";
-      s.ui.accent ??= "blue";
-      s.people = s.people.map(p => normalizePerson(p));
-      s.tasks = s.tasks.map(t => normalizeTask(t));
-      s.lastSavedAt ??= null;
-      return s;
+  function normalizeIncomingToV3(obj) {
+  if (!obj) return null;
+
+  // v3
+  if (obj.version === 3 && obj && typeof obj === 'object') {
+    // run through loadState-like normalization
+    const s = obj;
+    s.boards = s.boards && typeof s.boards === 'object' ? s.boards : {};
+    s.people = Array.isArray(s.people) ? s.people : [];
+    s.tasks = Array.isArray(s.tasks) ? s.tasks : [];
+    s.settings = s.settings && typeof s.settings === 'object' ? s.settings : {};
+
+    for (const [id, b] of Object.entries(s.boards)) {
+      if (!b || typeof b !== 'object') delete s.boards[id];
+      else s.boards[id] = normalizeBoard(b);
     }
-    if (obj.version === 1 && Array.isArray(obj.people)) {
-      return migrateV1ToV2(obj);
+    if (Object.keys(s.boards).length === 0) {
+      const fresh = defaultStateV3();
+      s.boards = fresh.boards;
     }
-    return null;
+
+    s.people = s.people.map(p => normalizePerson(p));
+    s.tasks = s.tasks.map(t => normalizeTask(t));
+
+    const d = defaultStateV3();
+    s.settings.theme ??= d.settings.theme;
+    s.settings.accentKey ??= (s.settings.accentKey || s.settings.accent || d.settings.accentKey);
+    delete s.settings.accent;
+
+    s.settings.sidebarOpen ??= d.settings.sidebarOpen;
+    s.settings.sidebarCollapsed ??= d.settings.sidebarCollapsed;
+
+    s.settings.selectedDay ??= d.settings.selectedDay;
+    s.settings.month ??= (s.settings.selectedDay ? String(s.settings.selectedDay).slice(0,7) : d.settings.month);
+
+    if (!s.settings.activeBoardId || !s.boards[s.settings.activeBoardId]) {
+      s.settings.activeBoardId = Object.keys(s.boards)[0];
+    }
+    if (s.settings.activePersonId && !s.people.some(p => p.id === s.settings.activePersonId)) {
+      s.settings.activePersonId = s.people[0]?.id ?? null;
+    }
+
+    const bid = s.settings.activeBoardId;
+    for (const t of s.tasks) {
+      if (!t.boardId || !s.boards[t.boardId]) t.boardId = bid;
+    }
+
+    s.updatedAt ??= null;
+    return s;
   }
 
-  function applyImport(mode) {
-    const importedRaw = pendingImport;
-    pendingImport = null;
-    safeCloseModal(importDialog);
+  // v2 -> v3
+  if (obj.version === 2 && Array.isArray(obj.people) && Array.isArray(obj.tasks)) {
+    return migrateV2ToV3(obj);
+  }
 
-    const incoming = normalizeIncomingToV2(importedRaw);
-    if (!incoming) {
-      toast("Import fehlgeschlagen (Format)");
-      return;
-    }
+  // v1 -> v2 -> v3
+  if (obj.version === 1 && Array.isArray(obj.people)) {
+    return migrateV2ToV3(migrateV1ToV2(obj));
+  }
 
-    if (mode === "replace") {
-      state = incoming;
-      ensureFirstRun();
-      saveState(false);
-      renderAll();
-      toast("Import: ersetzt");
-      return;
-    }
+  return null;
+}
 
-    // merge: people by id/name, tasks by id with collision-safe behaviour
-    const byId = new Map(state.people.map(p => [p.id, p]));
-    const byName = new Map(state.people.map(p => [p.name.toLowerCase(), p]));
+  
+function applyImport(mode) {
+  const importedRaw = view.pendingImport;
+  view.pendingImport = null;
+  safeCloseModal(importDialog);
 
-    for (const pIn of incoming.people) {
-      const nameKey = (pIn.name || "").toLowerCase();
-      let target = (pIn.id && byId.get(pIn.id)) || (nameKey && byName.get(nameKey));
+  const incoming = normalizeIncomingToV3(importedRaw);
+  if (!incoming) {
+    toast("Import fehlgeschlagen (Format)");
+    return;
+  }
 
-      if (!target) {
-        const pNew = normalizePerson({ id: pIn.id || uid(), name: pIn.name, createdAt: pIn.createdAt });
-        state.people.push(pNew);
-        byId.set(pNew.id, pNew);
-        byName.set((pNew.name || "").toLowerCase(), pNew);
-      }
-    }
-
-    const existingTaskIds = new Set(state.tasks.map(t => t.id));
-
-    for (const tInRaw of incoming.tasks) {
-      const tIn = normalizeTask({ ...tInRaw });
-
-      // ensure assignees exist in current people set
-      tIn.assignees = (tIn.assignees || []).filter(pid => state.people.some(p => p.id === pid));
-      if (tIn.assignees.length === 0) continue;
-
-      if (existingTaskIds.has(tIn.id)) {
-        // collision: do not overwrite. create a new id.
-        tIn.id = uid();
-      }
-
-      existingTaskIds.add(tIn.id);
-      state.tasks.push(tIn);
-    }
-
-    // UI sanity
-    state.ui ??= defaultStateV2().ui;
+  if (mode === "replace") {
+    state = incoming;
     ensureFirstRun();
+    applyUiTheme();
     saveState(false);
     renderAll();
-    toast("Import: zusammengeführt");
+    toast("Import: ersetzt");
+    return;
   }
 
-  // ---------- Dialog helpers ----------
+  // ---------- merge ----------
+  // 1) boards (merge by name)
+  const boardNameToId = new Map(Object.values(state.boards || {}).map(b => [(b.name || "").toLowerCase(), b.id]));
+  const boardIdMap = new Map();
+  for (const bIn of Object.values(incoming.boards || {})) {
+    const key = (bIn.name || "").toLowerCase();
+    const existingId = key ? boardNameToId.get(key) : null;
+    if (existingId) {
+      boardIdMap.set(bIn.id, existingId);
+      continue;
+    }
+    let newId = bIn.id || uid();
+    if (state.boards[newId]) newId = uid();
+    const bNew = normalizeBoard({ id: newId, name: bIn.name, createdAt: bIn.createdAt });
+    state.boards[bNew.id] = bNew;
+    boardNameToId.set((bNew.name || "").toLowerCase(), bNew.id);
+    boardIdMap.set(bIn.id, bNew.id);
+  }
+
+  const fallbackBoardId = state.settings.activeBoardId || Object.keys(state.boards)[0];
+
+  // 2) people (merge by type+name, otherwise add with collision-safe ids)
+  const existingByKey = new Map(state.people.map(p => [`${p.type}:${(p.name || "").toLowerCase()}`, p.id]));
+  const usedIds = new Set(state.people.map(p => p.id));
+  const peopleIdMap = new Map();
+
+  // first pass: decide id mapping
+  for (const pIn of incoming.people || []) {
+    const key = `${pIn.type}:${(pIn.name || "").toLowerCase()}`;
+    const existingId = existingByKey.get(key);
+    if (existingId) {
+      peopleIdMap.set(pIn.id, existingId);
+      continue;
+    }
+    let newId = pIn.id || uid();
+    if (usedIds.has(newId)) newId = uid();
+    peopleIdMap.set(pIn.id, newId);
+    usedIds.add(newId);
+  }
+
+  // second pass: add missing people/groups
+  for (const pIn of incoming.people || []) {
+    const key = `${pIn.type}:${(pIn.name || "").toLowerCase()}`;
+    if (existingByKey.has(key)) continue;
+
+    const id = peopleIdMap.get(pIn.id) || uid();
+    const pNew = normalizePerson({ ...pIn, id });
+    // members will be remapped below
+    state.people.push(pNew);
+    existingByKey.set(key, pNew.id);
+  }
+
+  // remap group members (both imported groups and existing groups that may point to imported ids)
+  for (const g of state.people) {
+    if (g.type !== "group") continue;
+    g.members = (g.members || [])
+      .map(mid => peopleIdMap.get(mid) || mid)
+      .filter(Boolean);
+    // remove self-cycles
+    g.members = g.members.filter(mid => mid !== g.id);
+  }
+
+  // 3) tasks
+  const existingTaskIds = new Set(state.tasks.map(t => t.id));
+  for (const raw of incoming.tasks || []) {
+    const t = normalizeTask({ ...raw });
+
+    // board remap
+    t.boardId = boardIdMap.get(t.boardId) || t.boardId || fallbackBoardId;
+    if (!state.boards[t.boardId]) t.boardId = fallbackBoardId;
+
+    // assignees remap + keep only existing people/groups
+    t.assignees = (t.assignees || [])
+      .map(pid => peopleIdMap.get(pid) || pid)
+      .filter(pid => state.people.some(p => p.id === pid));
+
+    if (t.assignees.length === 0) continue;
+
+    if (existingTaskIds.has(t.id)) t.id = uid();
+    existingTaskIds.add(t.id);
+
+    state.tasks.push(t);
+  }
+
+  ensureFirstRun();
+  saveState(false);
+  renderAll();
+  toast("Import: zusammengeführt");
+}
+
+// ---------- Dialog helpers ----------
 
   function safeShowModal(dlg) {
     if (typeof dlg.showModal === "function") dlg.showModal();
@@ -2281,7 +2667,7 @@ function renderLists() {
 
   function closeSidebarOnMobile() {
     if (window.matchMedia("(max-width: 760px)").matches) {
-      state.ui.sidebarOpen = false;
+      state.settings.sidebarOpen = false;
       $("#sidebar").classList.remove("open");
       saveState();
     }
@@ -2291,14 +2677,31 @@ function renderLists() {
 
   $("#btnToggleSidebar").addEventListener("click", () => {
     if (window.matchMedia("(max-width: 760px)").matches) {
-      state.ui.sidebarOpen = !state.ui.sidebarOpen;
-      $("#sidebar").classList.toggle("open", state.ui.sidebarOpen);
+      state.settings.sidebarOpen = !state.settings.sidebarOpen;
+      $("#sidebar").classList.toggle("open", state.settings.sidebarOpen);
     } else {
-      state.ui.sidebarCollapsed = !state.ui.sidebarCollapsed;
-      document.body.classList.toggle("sidebar-collapsed", state.ui.sidebarCollapsed);
+      state.settings.sidebarCollapsed = !state.settings.sidebarCollapsed;
+      document.body.classList.toggle("sidebar-collapsed", state.settings.sidebarCollapsed);
     }
     saveState();
   });
+
+
+// Board / Bereich
+const boardSelect = $("#boardSelect");
+if (boardSelect) {
+  boardSelect.addEventListener("change", () => {
+    const id = boardSelect.value;
+    if (!state.boards[id]) return;
+    state.settings.activeBoardId = id;
+    saveState();
+    renderAll();
+  });
+}
+$("#btnAddBoard")?.addEventListener("click", addBoard);
+$("#btnRenameBoard")?.addEventListener("click", renameActiveBoard);
+$("#btnDeleteBoard")?.addEventListener("click", deleteActiveBoard);
+
 
   $("#btnAddPerson").addEventListener("click", () => openPersonDialog());
 
@@ -2319,12 +2722,13 @@ function renderLists() {
     const name = $("#personName").value;
     const type = $("#personType").value;
     const role = $("#personRole").value;
+    const dept = $("#personDept").value;
 
     const members = [...document.querySelectorAll("#groupMembers input[type=checkbox]:checked")]
       .map(cb => cb.value);
 
     const editId = $("#personEditId").value || null;
-    upsertPerson({ name, type, role, members }, editId);
+    upsertPerson({ name, type, role, dept, members }, editId);
     safeCloseModal(personDialog);
     $("#btnToggleSidebar").disabled = (state.people.length === 0);
   });
@@ -2344,8 +2748,8 @@ function renderLists() {
 
   $("#btnToday").addEventListener("click", () => {
     const today = isoToday();
-    state.ui.selectedDay = today;
-    state.ui.month = today.slice(0, 7);
+    state.settings.selectedDay = today;
+    state.settings.month = today.slice(0, 7);
     saveState();
     renderAll();
     toast("Heute ausgewählt");
@@ -2357,14 +2761,14 @@ function renderLists() {
   $("#btnHelp").addEventListener("click", () => safeShowModal(helpDialog));
   const settingsDialog = $("#settingsDialog");
   $("#btnSettings").addEventListener("click", () => {
-    $("#setTheme").value = state.ui.theme || "system";
-    $("#setAccent").value = state.ui.accent || "blue";
+    $("#setTheme").value = state.settings.theme || "system";
+    $("#setAccent").value = state.settings.accentKey || "blue";
     safeShowModal(settingsDialog);
   });
   $("#settingsClose").addEventListener("click", () => safeCloseModal(settingsDialog));
   $("#settingsSave").addEventListener("click", () => {
-    state.ui.theme = $("#setTheme").value;
-    state.ui.accent = $("#setAccent").value;
+    state.settings.theme = $("#setTheme").value;
+    state.settings.accentKey = $("#setAccent").value;
     applyUiTheme();
     saveState();
     safeCloseModal(settingsDialog);
@@ -2376,31 +2780,6 @@ function renderLists() {
 
   $("#btnExportOverview").addEventListener("click", () => exportOverviewCSV());
 
-  // Expand/collapse all right-side sections (details)
-  const toggleAllBtn = document.getElementById("btnToggleAllSections");
-  if (toggleAllBtn) {
-    const sectionEls = () => [...document.querySelectorAll(".lists-card details.section")];
-    const updateToggleAll = () => {
-      const els = sectionEls();
-      const allOpen = (els.length > 0) && els.every(d => d.open);
-      toggleAllBtn.textContent = allOpen ? "−" : "＋";
-      const label = allOpen ? "Alle Abschnitte einklappen" : "Alle Abschnitte ausklappen";
-      toggleAllBtn.title = label;
-      toggleAllBtn.setAttribute("aria-label", label);
-    };
-
-    toggleAllBtn.addEventListener("click", () => {
-      const els = sectionEls();
-      const allOpen = (els.length > 0) && els.every(d => d.open);
-      els.forEach(d => { d.open = !allOpen; });
-      updateToggleAll();
-    });
-
-    // Keep the button state in sync when the user toggles a single section
-    sectionEls().forEach(d => d.addEventListener("toggle", updateToggleAll));
-    updateToggleAll();
-  }
-
   $("#taskIsBacklog").addEventListener("change", () => {
     // If backlog is enabled, force kind to task (appointments/milestones need a date)
     if ($("#taskIsBacklog").checked) {
@@ -2410,7 +2789,6 @@ function renderLists() {
     }
     syncKindInputs();
     syncDateInputs();
-    syncRepeatInputs();
     updateTaskHint();
   });
 
@@ -2423,12 +2801,11 @@ function renderLists() {
     const s = $("#taskStart").value;
     if ($("#taskEnd").value && $("#taskEnd").value < s) $("#taskEnd").value = s;
     if ($("#taskKind").value !== "task") $("#taskEnd").value = s;
-    syncRepeatInputs();
     updateTaskHint();
   });
 
   $("#taskEnd").addEventListener("change", updateTaskHint);
-  $("#taskRepeat").addEventListener("change", () => { syncRepeatInputs(); updateTaskHint(); });
+  $("#taskRepeat").addEventListener("change", () => { syncDateInputs(); updateTaskHint(); });
 
   $("#taskDeleteBtn").addEventListener("click", () => {
     const id = $("#taskEditId").value;
@@ -2452,29 +2829,29 @@ function renderLists() {
   });
 
   $("#btnPrevMonth").addEventListener("click", () => {
-    const [yStr, mStr] = state.ui.month.split("-");
+    const [yStr, mStr] = state.settings.month.split("-");
     let y = Number(yStr), m = Number(mStr);
     m -= 1;
     if (m <= 0) {
       m = 12;
       y -= 1;
     }
-    state.ui.month = `${y}-${String(m).padStart(2, "0")}`;
-    state.ui.selectedDay = clampDayToMonthISO(state.ui.selectedDay, state.ui.month);
+    state.settings.month = `${y}-${String(m).padStart(2, "0")}`;
+    state.settings.selectedDay = clampDayToMonthISO(state.settings.selectedDay, state.settings.month);
     saveState();
     renderAll();
   });
 
   $("#btnNextMonth").addEventListener("click", () => {
-    const [yStr, mStr] = state.ui.month.split("-");
+    const [yStr, mStr] = state.settings.month.split("-");
     let y = Number(yStr), m = Number(mStr);
     m += 1;
     if (m >= 13) {
       m = 1;
       y += 1;
     }
-    state.ui.month = `${y}-${String(m).padStart(2, "0")}`;
-    state.ui.selectedDay = clampDayToMonthISO(state.ui.selectedDay, state.ui.month);
+    state.settings.month = `${y}-${String(m).padStart(2, "0")}`;
+    state.settings.selectedDay = clampDayToMonthISO(state.settings.selectedDay, state.settings.month);
     saveState();
     renderAll();
   });
@@ -2485,8 +2862,8 @@ function renderLists() {
     jumpMonthEl.addEventListener("change", () => {
       const v = String(jumpMonthEl.value || "").trim();
       if (!/^\d{4}-\d{2}$/.test(v)) return;
-      state.ui.month = v;
-      state.ui.selectedDay = clampDayToMonthISO(state.ui.selectedDay, v);
+      state.settings.month = v;
+      state.settings.selectedDay = clampDayToMonthISO(state.settings.selectedDay, v);
       saveState();
       renderAll();
     });
@@ -2497,8 +2874,8 @@ function renderLists() {
     jumpWeekEl.addEventListener("change", () => {
       const iso = isoFromWeekInput(jumpWeekEl.value);
       if (!iso) return;
-      state.ui.selectedDay = iso;
-      state.ui.month = iso.slice(0, 7);
+      state.settings.selectedDay = iso;
+      state.settings.month = iso.slice(0, 7);
       saveState();
       renderAll();
     });
@@ -2520,7 +2897,7 @@ function renderLists() {
 
     try {
       const text = await file.text();
-      const imported = safeParse(text);
+      const imported = safeJsonParse(text);
       openImportChoice(imported);
     } catch {
       toast("Import fehlgeschlagen");
@@ -2528,7 +2905,7 @@ function renderLists() {
   });
 
   $("#importCancel").addEventListener("click", () => {
-    pendingImport = null;
+    view.pendingImport = null;
     safeCloseModal(importDialog);
   });
   $("#importMerge").addEventListener("click", () => applyImport("merge"));
@@ -2550,8 +2927,8 @@ function renderLists() {
   function updatePrintMeta() {
     const ap = activePerson();
     const q = $("#searchInput").value;
-    const selWi = getISOWeekInfo(parseISODate(state.ui.selectedDay));
-    const d = new Date(state.ui.selectedDay);
+    const selWi = getISOWeekInfo(parseISODate(state.settings.selectedDay));
+    const d = new Date(state.settings.selectedDay);
     const dayLabel = d.toLocaleDateString("de-DE", { weekday: "long", year: "numeric", month: "long", day: "numeric" });
     const filter = q ? ` · Filter: „${q}“` : "";
     $("#printMeta").textContent = ap ? `${ap.name} · ${dayLabel}${filter}` : dayLabel;
@@ -2560,7 +2937,7 @@ function renderLists() {
   function renderAnalytics() {
     const ap = activePerson();
     const q = $("#searchInput").value;
-    const selWi = getISOWeekInfo(parseISODate(state.ui.selectedDay));
+    const selWi = getISOWeekInfo(parseISODate(state.settings.selectedDay));
     const canvas = $("#chartWorkload");
     const statusBar = $("#statusBar");
     const legend = $("#statusLegend");
@@ -2696,24 +3073,26 @@ function renderLists() {
     ctx.closePath();
   }
 
-  // ---------- Boot ----------
-
-  // Normalize loaded data
-  state.people = state.people.map(p => normalizePerson(p));
-  state.tasks = state.tasks.map(t => normalizeTask(t));
-  state.ui ??= defaultStateV2().ui;
-
-  // remove tasks with no assignees or unknown people
-  const peopleIds = new Set(state.people.map(p => p.id));
-  state.tasks = state.tasks
-    .map(t => ({ ...t, assignees: (t.assignees || []).filter(a => peopleIds.has(a)) }))
-    .filter(t => (t.assignees || []).length > 0);
-
+  
+// ---------- Boot ----------
   ensureFirstRun();
+  applyUiTheme();
 
-  // Keep sidebar state consistent
-  document.body.classList.toggle("sidebar-collapsed", !!state.ui.sidebarCollapsed);
-  $("#sidebar").classList.toggle("open", !!state.ui.sidebarOpen);
+  // React to system theme switches (only relevant when theme === "system")
+  try {
+    const mq = window.matchMedia && window.matchMedia("(prefers-color-scheme: light)");
+    mq && mq.addEventListener && mq.addEventListener("change", () => {
+      if ((state.settings.theme || "system") === "system") {
+        applyUiTheme();
+        renderAll();
+      } else {
+        applyAccent();
+      }
+    });
+  } catch {}
 
+  updateSaveInfo();
+  syncSidebarCollapsed();
   renderAll();
+
 })();

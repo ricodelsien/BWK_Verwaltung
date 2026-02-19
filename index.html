@@ -10,7 +10,7 @@
 </head>
 
 <body>
-  <header class="topbar">
+  <header class="topbar no-print">
     <button class="icon-btn" id="btnToggleSidebar" aria-label="Seitenleiste öffnen/schließen">☰</button>
 
     <div class="brand">
@@ -18,7 +18,16 @@
           </div>
 
     <div class="top-actions">
-      <input class="search" id="searchInput" type="search" placeholder="Suchen…" inputmode="search" aria-label="Aufgaben durchsuchen" />
+      
+      <div class="plan-switch" aria-label="Bereich/Board auswählen">
+        <small>Bereich:</small>
+        <select class="ctrl small" id="boardSelect" aria-label="Bereich"></select>
+        <button class="icon-btn" id="btnAddBoard" title="Bereich hinzufügen" aria-label="Bereich hinzufügen">＋</button>
+        <button class="icon-btn" id="btnRenameBoard" title="Bereich umbenennen" aria-label="Bereich umbenennen">✎</button>
+        <button class="icon-btn danger" id="btnDeleteBoard" title="Bereich entfernen" aria-label="Bereich entfernen">🗑</button>
+      </div>
+      <small>|</small>
+<input class="search" id="searchInput" type="search" placeholder="Suchen…" inputmode="search" aria-label="Aufgaben durchsuchen" />
       <button class="btn" id="btnToday" title="Heute auswählen">Heute</button>
       <button class="btn" id="btnAddTask">+ Aufgabe</button>
 
@@ -37,7 +46,7 @@
   </header>
 
   <div class="shell">
-    <aside class="sidebar" id="sidebar">
+    <aside class="sidebar no-print" id="sidebar">
       <div class="sidebar-head">
         <div class="sidebar-title">Personen / Gruppen</div>
         <button class="icon-btn" id="btnAddPerson" aria-label="Person hinzufügen" title="Person hinzufügen">＋</button>
@@ -90,10 +99,7 @@
         <div class="card lists-card">
           <div class="card-head">
             <div class="card-title">Aufgaben</div>
-            <div class="head-right">
-              <button class="icon-btn" id="btnToggleAllSections" aria-label="Alle Abschnitte ausklappen" title="Alle Abschnitte ausklappen">＋</button>
-              <div class="chip" id="activePersonChip">—</div>
-            </div>
+            <div class="chip" id="activePersonChip">—</div>
           </div>
 
       <div class="print-meta" id="printMeta"></div>
@@ -102,10 +108,10 @@
 
       <details class="section" open>
         <summary class="section-title">Planungs-Übersicht <span class="count" id="countOverview">0</span></summary>
-        <div class="section-hint">Kurzauswertung für die aktive Person (gefiltert durch Suche). Fokus: 14 Tage + Status.</div>
+        <div class="section-hint">Mini-Statistik für die aktive Person (gefiltert durch Suche). Fokus: nächste 14 Tage + Status.</div>
         <div class="analytics">
           <div class="analytics-card">
-            <div class="analytics-title">14 Tage Übersicht</div>
+            <div class="analytics-title">Nächste 14 Tage</div>
             <canvas id="chartWorkload" width="680" height="160" aria-label="Auslastung" role="img"></canvas>
           </div>
           <div class="analytics-card">
@@ -138,7 +144,7 @@
 
           <details class="section">
             <summary class="section-title">Backlog (ohne Datum) <span class="count" id="countBacklog">0</span></summary>
-            <div class="section-hint">Backlog = ohne Datum. Aufgabe öffnen und Start/Ende ergänzen, um sie einzuplanen.</div>
+            <div class="section-hint">Backlog = ohne Datum. Öffne eine Aufgabe und ergänze Start/Ende, um sie einzuplanen.</div>
             <div id="listBacklog" class="task-list"></div>
           </details>
 
@@ -171,14 +177,21 @@
         </label>
         <label class="field">
           <span>Rolle (optional)</span>
-          <input id="personRole" type="text" maxlength="40" placeholder="z. B. Projektleitung, Dozent, …" />
+          <input id="personRole" type="text" maxlength="40" placeholder="z. B. Projektleitung, Mentor, …" />
         </label>
+      </div>
+
+      <label class="field">
+        <span>Abteilung (optional)</span>
+        <input id="personDept" type="text" maxlength="40" placeholder="z. B. AVöD, Verwaltung, IT, …" />
+      </label>
+
       </div>
 
       <div class="field" id="groupMembersField" hidden>
         <span>Mitglieder</span>
         <div class="members" id="groupMembers"></div>
-        <div class="tiny muted">Tipp: es können auch Gruppen zusammengelegt werden. Beim Anzeigen/Export werden Mitglieder aufgelöst.</div>
+        <div class="tiny muted">Tipp: Du kannst auch Gruppen auswählen (Merge). Beim Anzeigen/Export werden Mitglieder aufgelöst.</div>
       </div>
 
       <div class="modal-actions">
@@ -240,20 +253,19 @@
 
         <label class="field" id="timeHintField">
           <span>Uhrzeit (nur Termin)</span>
-          <div class="tiny">Wenn kein Termin geplant wird, ignorieren.</div>
+          <div class="tiny">Wenn du keinen Termin planst, ignorieren.</div>
         </label>
       </div>
 
-      <div class="row" id="repeatUntilRow">
+      <div class="row" id="repeatUntilRow" hidden>
         <label class="field">
-          <span>Wiederholung bis</span>
+          <span>Wiederholen bis (Ende)</span>
           <input id="taskRepeatUntil" type="date" />
-          <div class="tiny">Optionales Enddatum (inkl.).</div>
         </label>
-        <label class="field ghost" aria-hidden="true">
-          <span>&nbsp;</span>
-          <div class="tiny">Leer lassen = ohne Ende.</div>
-        </label>
+        <div class="field" style="opacity:.75">
+          <span>Hinweis</span>
+          <div class="tiny">Empfohlen: ein Ende setzen, damit Wiederholungen nicht endlos laufen.</div>
+        </div>
       </div>
 
 
@@ -306,8 +318,8 @@
     <div class="modal-box">
       <div class="modal-title">Import</div>
       <div class="hint">
-        Die importierten Daten können entweder <b>ersetzt</b> (empfohlen nach Cookie/Websitedaten-Löschung),
-        oder <b>zusammengeführt</b> werden.
+        Du kannst die importierten Daten entweder <b>ersetzen</b> (empfohlen nach Cookie-Löschung),
+        oder <b>zusammenführen</b> (merge).
       </div>
 
       <div class="modal-actions">
@@ -323,7 +335,7 @@
   <dialog class="modal" id="settingsDialog">
     <div class="modal-box">
       <div class="modal-title">Einstellungen</div>
-      <div class="hint">Theme + Akzent: Speichert lokal im Browser.</div>
+      <div class="hint">Theme + Akzent (wie in der Stundenplan-App). Speichert lokal im Browser.</div>
 
       <div class="form-grid">
         <label class="field">
@@ -362,13 +374,13 @@
       <div class="hint">
         <b>Kalender</b>: Klick = Tag auswählen. Doppelklick (oder Doppeltippen am Handy) = neue Aufgabe für diesen Tag.
         <br><br>
-        <b>Aufgabe/Termin/Meilenstein</b>: Im Dialog kann ein Typ ausgewählt werden.
+        <b>Aufgabe/Termin/Meilenstein</b>: Im Dialog kannst du den Typ wählen.
         <ul class="help-list">
           <li><b>Aufgabe</b>: klassisch (Start/Ende optional als Zeitraum).</li>
           <li><b>Termin</b>: ein Tag, optional mit Uhrzeit.</li>
           <li><b>Meilenstein</b>: ein Tag (z. B. Abgabe, Deadline).</li>
         </ul>
-        <b>Backlog</b>: ohne Datum – ideal zum Sammeln. Für einen späteren Zeitpunkt planen oder direkt starten.
+        <b>Backlog</b>: ohne Datum – ideal zum Sammeln. Später planen oder direkt starten.
         <br><br>
         <b>Speichern</b>: Standardmäßig lokal im Browser. Für Austausch im Team: JSON exportieren und importieren.
       </div>
